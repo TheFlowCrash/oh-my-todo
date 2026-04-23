@@ -1,5 +1,5 @@
 use crate::application::error::AppError;
-use crate::application::service::{SpaceService, TaskService};
+use crate::application::{SpaceService, TaskService};
 use crate::storage::{AppRepository, DataPaths, FilesystemRepository, RepositorySnapshot};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

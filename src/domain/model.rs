@@ -135,8 +135,20 @@ pub struct AppState {
 }
 
 impl TaskStatus {
+    pub fn is_active(self) -> bool {
+        matches!(self, Self::Todo | Self::InProgress | Self::Done)
+    }
+
     pub fn is_archived(self) -> bool {
         matches!(self, Self::Archived)
+    }
+
+    pub fn is_visible_in_view(self, view: ViewMode) -> bool {
+        match view {
+            ViewMode::Todo => matches!(self, Self::Todo | Self::InProgress),
+            ViewMode::Archive => matches!(self, Self::Done | Self::Archived),
+            ViewMode::All => true,
+        }
     }
 }
 
@@ -170,6 +182,10 @@ impl Task {
             "todo"
         }
     }
+
+    pub fn touch(&mut self, now: OffsetDateTime) {
+        self.updated_at = now;
+    }
 }
 
 impl Space {
@@ -186,6 +202,11 @@ impl Space {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    pub fn rename(&mut self, name: impl Into<String>, now: OffsetDateTime) {
+        self.name = name.into();
+        self.updated_at = now;
     }
 }
 

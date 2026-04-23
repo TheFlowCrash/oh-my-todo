@@ -1,4 +1,5 @@
 use oh_my_todo::application::bootstrap::{BootstrapOptions, bootstrap};
+use oh_my_todo::application::queries::ListSpacesQuery;
 use oh_my_todo::domain::{Space, Task, TaskStatus};
 use std::fs;
 use tempfile::tempdir;
@@ -19,7 +20,15 @@ fn bootstrap_initializes_empty_repository_layout() {
     assert!(data_root.join("config").join("state.ron").exists());
     assert!(data_root.join("spaces").exists());
     assert!(context.startup.spaces.is_empty());
-    assert!(context.space_service.list_spaces().unwrap().is_empty());
+    assert!(
+        context
+            .space_service
+            .list_spaces(ListSpacesQuery {
+                include_archived: true,
+            })
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]

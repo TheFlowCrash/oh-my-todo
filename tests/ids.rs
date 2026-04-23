@@ -1,6 +1,6 @@
 use oh_my_todo::domain::{
-    resolve_space_ref, resolve_task_ref, ReferenceError, Space, SpaceId, TaskId,
-    MIN_SHORT_ID_SUFFIX_LEN,
+    MIN_SHORT_ID_SUFFIX_LEN, ReferenceError, Space, SpaceId, TaskId, resolve_space_ref,
+    resolve_task_ref,
 };
 
 #[test]

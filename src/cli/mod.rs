@@ -1,25 +1,11 @@
-use crate::application::bootstrap::AppContext;
-use crate::application::error::AppError;
+pub mod handlers;
+pub mod output;
+pub mod parser;
 
-pub fn run(context: &AppContext, args: &[String]) -> Result<(), AppError> {
-    let spaces = context.space_service.list_spaces()?;
-    let current_space = context.space_service.load_app_state()?.current_space_id;
+use clap::Parser;
 
-    println!("oh-my-todo CLI adapter (stage 1)");
-    println!("data root: {}", context.data_root().display());
-    println!("spaces loaded: {}", spaces.len());
-    println!(
-        "current space: {}",
-        current_space
-            .as_ref()
-            .map(|id| id.as_str())
-            .unwrap_or("<none>")
-    );
-    if args.is_empty() {
-        println!("received no CLI subcommand");
-    } else {
-        println!("received args: {}", args.join(" "));
-    }
+pub use parser::TodoCli;
 
-    Ok(())
+pub fn parse(args: &[String]) -> Result<TodoCli, clap::Error> {
+    TodoCli::try_parse_from(std::iter::once("todo".to_owned()).chain(args.iter().cloned()))
 }

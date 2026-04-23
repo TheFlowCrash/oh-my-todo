@@ -5,20 +5,35 @@ use std::process::ExitCode;
 
 fn main() -> ExitCode {
     match run() {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(code) => code,
         Err(error) => {
             eprintln!("error: {error}");
-            ExitCode::from(1)
+            if let Some(hint) = error.hint() {
+                eprintln!("hint: {hint}");
+            }
+            error.exit_code()
         }
     }
 }
 
-fn run() -> Result<(), AppError> {
+fn run() -> Result<ExitCode, AppError> {
     let args = env::args().skip(1).collect::<Vec<_>>();
-    let context = bootstrap(BootstrapOptions::default())?;
-
-    match args.first().map(String::as_str) {
-        None | Some("tui") => tui::run(&context),
-        Some(_) => cli::run(&context, &args),
+    if args.is_empty() {
+        let context = bootstrap(BootstrapOptions::default())?;
+        tui::run(&context)?;
+        return Ok(ExitCode::SUCCESS);
     }
+
+    let parsed = match cli::parse(&args) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            let code = error.exit_code();
+            error.print().expect("clap error should print");
+            return Ok(ExitCode::from(code as u8));
+        }
+    };
+
+    let context = bootstrap(BootstrapOptions::default())?;
+    cli::handlers::dispatch(&context, parsed)?;
+    Ok(ExitCode::SUCCESS)
 }

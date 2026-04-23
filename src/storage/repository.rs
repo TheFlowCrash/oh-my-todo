@@ -1,4 +1,4 @@
-use crate::domain::{AppConfig, AppState, Space, SpaceId, Task, TaskId, TaskStatus};
+use crate::domain::{AppConfig, AppState, Space, SpaceId, Task, TaskId};
 use crate::storage::paths::DataPaths;
 use crate::storage::serializer::{read_ron_file, write_ron_file};
 use std::fs;
@@ -187,27 +187,20 @@ impl AppRepository for FilesystemRepository {
         self.ensure_layout()?;
         self.ensure_space_layout(&task.space_id)?;
 
-        let todo_path = self
-            .paths
-            .task_path_for_id(&task.space_id, &task.id, "todo");
-        let archive_path = self
-            .paths
-            .task_path_for_id(&task.space_id, &task.id, "archive");
         let target_path = self.paths.task_path(task);
 
         write_ron_file(&target_path, task)?;
 
-        let stale_path = if matches!(task.status, TaskStatus::Archived) {
-            todo_path
-        } else {
-            archive_path
-        };
-
-        if stale_path.exists() {
-            fs::remove_file(&stale_path).map_err(|source| StorageError::Io {
-                path: stale_path,
-                source,
-            })?;
+        for space in self.list_spaces()? {
+            for bucket in ["todo", "archive"] {
+                let candidate_path = self.paths.task_path_for_id(&space.id, &task.id, bucket);
+                if candidate_path != target_path && candidate_path.exists() {
+                    fs::remove_file(&candidate_path).map_err(|source| StorageError::Io {
+                        path: candidate_path,
+                        source,
+                    })?;
+                }
+            }
         }
 
         Ok(())

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+clap = { version = "4.6.1", features = ["derive"] }
 directories = "6.0.0"
 ron = "0.12.1"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -12,4 +13,6 @@ time = { version = "0.3.47", features = ["serde", "formatting", "parsing"] }
 ulid = "1.2.1"
 
 [dev-dependencies]
+assert_cmd = "2.2.1"
+predicates = "3.1.4"
 tempfile = "3.27.0"
