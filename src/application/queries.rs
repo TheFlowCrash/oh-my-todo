@@ -19,6 +19,7 @@ pub struct ListTasksQuery {
     pub space_ref: Option<String>,
     pub view: Option<ViewMode>,
     pub sort: Option<SortMode>,
+    pub allow_archived_space: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

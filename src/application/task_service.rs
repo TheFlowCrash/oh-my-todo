@@ -1,6 +1,6 @@
 use crate::application::commands::{
-    AddTaskLogCommand, ArchiveTaskCommand, CreateTaskCommand, EditTaskCommand, PurgeTaskCommand,
-    RestoreTaskCommand, UpdateTaskStatusCommand,
+    AddTaskLogCommand, ArchiveTaskCommand, CreateTaskCommand, EditTaskCommand, MoveTaskCommand,
+    MoveTaskDirection, PurgeTaskCommand, RestoreTaskCommand, UpdateTaskStatusCommand,
 };
 use crate::application::error::AppError;
 use crate::application::maintenance_service::MaintenanceService;
@@ -84,7 +84,8 @@ impl TaskService {
 
     pub fn list_tasks(&self, query: ListTasksQuery) -> Result<TaskListResult, AppError> {
         let state = self.repository.load_state()?;
-        let space = self.resolve_effective_space(query.space_ref.as_deref(), true)?;
+        let space =
+            self.resolve_effective_space(query.space_ref.as_deref(), !query.allow_archived_space)?;
         let view = query.view.unwrap_or(ViewMode::Todo);
         let sort = query.sort.unwrap_or(state.current_sort);
         let tasks = self.repository.list_tasks_in_space(&space.id)?;
@@ -416,6 +417,58 @@ impl TaskService {
         })
     }
 
+    pub fn move_task(&self, command: MoveTaskCommand) -> Result<Task, AppError> {
+        let all_tasks = self.repository.list_all_tasks()?;
+        let task = self.resolve_task_from(&all_tasks, &command.task_ref)?;
+        let space = self.repository.load_space(&task.space_id)?;
+        ensure_active_space(&space)?;
+
+        let mut siblings = all_tasks
+            .iter()
+            .filter(|candidate| candidate.space_id == task.space_id)
+            .filter(|candidate| candidate.parent_id == task.parent_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        sort_tasks_in_place(&mut siblings, SortMode::Manual);
+
+        let Some(index) = siblings
+            .iter()
+            .position(|candidate| candidate.id == task.id)
+        else {
+            return Ok(task);
+        };
+
+        let swap_index = match command.direction {
+            MoveTaskDirection::Up => index.checked_sub(1),
+            MoveTaskDirection::Down => (index + 1 < siblings.len()).then_some(index + 1),
+        }
+        .ok_or_else(|| AppError::TaskReorderBoundary {
+            task_id: task.id.clone(),
+            direction: move_direction_label(command.direction),
+        })?;
+
+        siblings.swap(index, swap_index);
+        let now = OffsetDateTime::now_utc();
+
+        for (sort_order, sibling) in siblings.iter_mut().enumerate() {
+            let next_sort_order = sort_order as i64;
+            if sibling.sort_order != next_sort_order {
+                sibling.sort_order = next_sort_order;
+                sibling.touch(now);
+                self.repository.save_task(sibling)?;
+            }
+        }
+
+        siblings
+            .into_iter()
+            .find(|candidate| candidate.id == task.id)
+            .ok_or_else(|| {
+                AppError::Reference(crate::domain::ReferenceError::TaskNotFound(
+                    command.task_ref,
+                ))
+            })
+    }
+
     pub fn load_task(&self, task_id: &TaskId) -> Result<Task, AppError> {
         self.repository.load_task(task_id).map_err(AppError::from)
     }
@@ -542,4 +595,11 @@ fn first_archived_ancestor_id(tasks: &[Task], task: &Task) -> Option<TaskId> {
     }
 
     None
+}
+
+fn move_direction_label(direction: MoveTaskDirection) -> &'static str {
+    match direction {
+        MoveTaskDirection::Up => "up",
+        MoveTaskDirection::Down => "down",
+    }
 }

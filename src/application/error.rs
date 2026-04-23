@@ -66,6 +66,11 @@ pub enum AppError {
         task_id: TaskId,
         offender_id: TaskId,
     },
+    #[error("task `{task_id}` cannot move {direction} within its current sibling list")]
+    TaskReorderBoundary {
+        task_id: TaskId,
+        direction: &'static str,
+    },
     #[error(
         "another multi-file operation `{operation_id}` ({kind}) is still pending; recover it first"
     )]
@@ -99,6 +104,7 @@ impl AppError {
             | Self::TaskPurgeRequiresRecursive { .. }
             | Self::TaskRestoreBlockedByArchivedAncestor { .. }
             | Self::TaskPurgeRequiresArchivedSubtree { .. }
+            | Self::TaskReorderBoundary { .. }
             | Self::PendingOperationInProgress { .. } => ExitCode::from(5),
         }
     }
@@ -147,6 +153,9 @@ impl AppError {
             }
             Self::TaskPurgeRequiresArchivedSubtree { .. } => {
                 Some("only fully archived subtrees can be purged")
+            }
+            Self::TaskReorderBoundary { .. } => {
+                Some("choose a task with siblings and move it within manual sort")
             }
             Self::PendingOperationInProgress { .. } => {
                 Some("restart the app to auto-recover the pending operation, or run `todo doctor`")

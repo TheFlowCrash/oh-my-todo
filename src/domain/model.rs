@@ -52,6 +52,14 @@ pub enum FocusArea {
     Details,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SpaceListMode {
+    #[default]
+    Active,
+    All,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct SpaceCounts {
     pub todo_tasks: usize,
@@ -103,6 +111,7 @@ pub struct AppConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct SpaceViewMemory {
     pub selected_task_id: Option<TaskId>,
     pub expanded_task_ids: Vec<TaskId>,
@@ -147,13 +156,18 @@ pub struct PendingOperation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct TuiMemory {
     pub focus_area: FocusArea,
     pub spaces_cursor: usize,
+    pub selected_space_id: Option<SpaceId>,
+    pub space_list_mode: SpaceListMode,
+    pub task_filter: String,
     pub spaces: BTreeMap<SpaceId, SpaceViewMemory>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AppState {
     pub current_space_id: Option<SpaceId>,
     pub current_view: ViewMode,
@@ -183,6 +197,16 @@ impl TaskStatus {
 impl SpaceState {
     pub fn is_active(self) -> bool {
         matches!(self, Self::Active)
+    }
+
+    pub fn is_archived(self) -> bool {
+        matches!(self, Self::Archived)
+    }
+}
+
+impl SpaceListMode {
+    pub fn includes_archived(self) -> bool {
+        matches!(self, Self::All)
     }
 }
 

@@ -1,5 +1,11 @@
 use crate::domain::{SpaceId, TaskStatus};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoveTaskDirection {
+    Up,
+    Down,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateSpaceCommand {
     pub name: String,
@@ -76,6 +82,12 @@ pub struct RestoreTaskCommand {
 pub struct PurgeTaskCommand {
     pub task_ref: String,
     pub recursive: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MoveTaskCommand {
+    pub task_ref: String,
+    pub direction: MoveTaskDirection,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

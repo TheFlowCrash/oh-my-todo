@@ -21,7 +21,7 @@ pub fn dispatch(context: &AppContext, cli: TodoCli) -> Result<(), AppError> {
         }
         RootCommand::Tui(args) => {
             let space_id = match args.space.as_deref() {
-                Some(reference) => Some(context.space_service.resolve_space(reference, true)?.id),
+                Some(reference) => Some(context.space_service.resolve_space(reference, false)?.id),
                 None => None,
             };
 
@@ -118,6 +118,7 @@ pub fn dispatch(context: &AppContext, cli: TodoCli) -> Result<(), AppError> {
                     space_ref: args.space,
                     view: args.view.map(Into::into),
                     sort: args.sort.map(Into::into),
+                    allow_archived_space: false,
                 })?;
                 println!("{}", output::render_task_list(&result));
                 Ok(())
