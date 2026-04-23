@@ -1,5 +1,5 @@
 use crate::application::error::AppError;
-use crate::application::{MaintenanceService, SpaceService, TaskService};
+use crate::application::{AppStateService, MaintenanceService, SpaceService, TaskService};
 use crate::storage::{AppRepository, DataPaths, FilesystemRepository, RepositorySnapshot};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,6 +13,7 @@ pub struct BootstrapOptions {
 pub struct AppContext {
     repository: Arc<dyn AppRepository>,
     pub startup: RepositorySnapshot,
+    pub app_state_service: AppStateService,
     pub maintenance_service: MaintenanceService,
     pub space_service: SpaceService,
     pub task_service: TaskService,
@@ -35,6 +36,7 @@ pub fn bootstrap(options: BootstrapOptions) -> Result<AppContext, AppError> {
     let maintenance_service = MaintenanceService::new(repository.clone());
     maintenance_service.recover_pending_operation()?;
     let startup = repository.initialize()?;
+    let app_state_service = AppStateService::new(repository.clone());
     let maintenance_service = MaintenanceService::new(repository.clone());
     let space_service = SpaceService::new(repository.clone());
     let task_service = TaskService::new(repository.clone());
@@ -42,6 +44,7 @@ pub fn bootstrap(options: BootstrapOptions) -> Result<AppContext, AppError> {
     Ok(AppContext {
         repository,
         startup,
+        app_state_service,
         maintenance_service,
         space_service,
         task_service,

@@ -6,6 +6,8 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum AppError {
     #[error(transparent)]
+    TerminalIo(#[from] std::io::Error),
+    #[error(transparent)]
     Storage(#[from] StorageError),
     #[error(transparent)]
     Reference(#[from] ReferenceError),
@@ -76,6 +78,7 @@ pub enum AppError {
 impl AppError {
     pub fn exit_code(&self) -> ExitCode {
         match self {
+            Self::TerminalIo(_) => ExitCode::from(1),
             Self::Storage(_) => ExitCode::from(6),
             Self::Reference(ReferenceError::TaskNotFound(_))
             | Self::Reference(ReferenceError::SpaceNotFound(_)) => ExitCode::from(3),
@@ -148,6 +151,7 @@ impl AppError {
             Self::PendingOperationInProgress { .. } => {
                 Some("restart the app to auto-recover the pending operation, or run `todo doctor`")
             }
+            Self::TerminalIo(_) => Some("retry in an interactive terminal session"),
             _ => None,
         }
     }

@@ -1,7 +1,15 @@
+mod app;
+mod input;
+mod render;
+
 use crate::application::bootstrap::AppContext;
 use crate::application::error::AppError;
-use crate::application::queries::ListSpacesQuery;
 use crate::domain::{SortMode, SpaceId, ViewMode};
+use app::TuiApp;
+use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind};
+use crossterm::execute;
+use ratatui::DefaultTerminal;
+use std::io::stdout;
 
 #[derive(Debug, Clone, Default)]
 pub struct LaunchOptions {
@@ -15,24 +23,42 @@ pub fn run(context: &AppContext) -> Result<(), AppError> {
 }
 
 pub fn run_with_options(context: &AppContext, options: LaunchOptions) -> Result<(), AppError> {
-    let spaces = context.space_service.list_spaces(ListSpacesQuery {
-        include_archived: false,
-    })?;
-    let state = context.space_service.load_app_state()?;
-    let current_space = options
-        .space_id
-        .or(state.current_space_id)
-        .map(|id| id.as_str().to_owned())
-        .unwrap_or_else(|| "<none>".to_owned());
-    let view = options.view.unwrap_or(state.current_view);
-    let sort = options.sort.unwrap_or(state.current_sort);
+    let mut terminal = ratatui::init();
+    execute!(stdout(), EnableMouseCapture)?;
+    let result = run_app(&mut terminal, context, options);
+    let _ = execute!(stdout(), DisableMouseCapture);
+    ratatui::restore();
+    result
+}
 
-    println!("oh-my-todo TUI adapter (stage 2)");
-    println!("data root: {}", context.data_root().display());
-    println!("spaces loaded: {}", spaces.len());
-    println!("current space: {}", current_space);
-    println!("view: {:?}", view);
-    println!("sort: {:?}", sort);
+fn run_app(
+    terminal: &mut DefaultTerminal,
+    context: &AppContext,
+    options: LaunchOptions,
+) -> Result<(), AppError> {
+    let mut app = TuiApp::new(context, options)?;
 
+    while !app.should_quit {
+        terminal.draw(|frame| render::render(frame, &mut app))?;
+
+        match event::read()? {
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                let changed = app.handle_key(context, key)?;
+                if changed {
+                    app.persist(context)?;
+                }
+            }
+            Event::Mouse(mouse) => {
+                let changed = app.handle_mouse(context, mouse)?;
+                if changed {
+                    app.persist(context)?;
+                }
+            }
+            Event::Resize(_, _) => {}
+            _ => {}
+        }
+    }
+
+    app.persist(context)?;
     Ok(())
 }
