@@ -1,7 +1,8 @@
 use crate::application::bootstrap::AppContext;
 use crate::application::commands::{
-    AddTaskLogCommand, CreateSpaceCommand, CreateTaskCommand, EditTaskCommand, RenameSpaceCommand,
-    SetCurrentSpaceCommand, UpdateTaskStatusCommand,
+    AddTaskLogCommand, ArchiveSpaceCommand, ArchiveTaskCommand, CreateSpaceCommand,
+    CreateTaskCommand, EditTaskCommand, PurgeSpaceCommand, PurgeTaskCommand, RenameSpaceCommand,
+    RestoreSpaceCommand, RestoreTaskCommand, SetCurrentSpaceCommand, UpdateTaskStatusCommand,
 };
 use crate::application::error::AppError;
 use crate::application::queries::{ListSpacesQuery, ListTasksQuery, ShowSpaceQuery, ShowTaskQuery};
@@ -13,6 +14,11 @@ use crate::tui::{self, LaunchOptions};
 
 pub fn dispatch(context: &AppContext, cli: TodoCli) -> Result<(), AppError> {
     match cli.command {
+        RootCommand::Doctor => {
+            let report = context.maintenance_service.doctor()?;
+            println!("{}", output::render_doctor_report(&report));
+            Ok(())
+        }
         RootCommand::Tui(args) => {
             let space_id = match args.space.as_deref() {
                 Some(reference) => Some(context.space_service.resolve_space(reference, true)?.id),
@@ -64,6 +70,31 @@ pub fn dispatch(context: &AppContext, cli: TodoCli) -> Result<(), AppError> {
                 })?;
                 println!("{}", output::format_renamed_space(&space));
                 launch_tui_if_needed(context, args.tui, Some(space.id), None, None)
+            }
+            SpaceCommand::Archive(args) => {
+                let outcome = context.space_service.archive_space(ArchiveSpaceCommand {
+                    space_ref: args.space_ref,
+                })?;
+                let space = outcome.root_space.expect("space archive returns space");
+                println!("{}", output::format_archived_space(&space));
+                launch_tui_if_needed(context, args.tui, Some(space.id), None, None)
+            }
+            SpaceCommand::Restore(args) => {
+                let outcome = context.space_service.restore_space(RestoreSpaceCommand {
+                    space_ref: args.space_ref,
+                })?;
+                let space = outcome.root_space.expect("space restore returns space");
+                println!("{}", output::format_restored_space(&space));
+                launch_tui_if_needed(context, args.tui, Some(space.id), None, None)
+            }
+            SpaceCommand::Purge(args) => {
+                let _ = args.force;
+                let outcome = context.space_service.purge_space(PurgeSpaceCommand {
+                    space_ref: args.space_ref,
+                })?;
+                let space = outcome.root_space.expect("space purge returns prior space");
+                println!("{}", output::format_purged_space(&space));
+                Ok(())
             }
         },
         RootCommand::Task(task_args) => match task_args.command {
@@ -134,6 +165,32 @@ pub fn dispatch(context: &AppContext, cli: TodoCli) -> Result<(), AppError> {
                 println!("{}", output::format_task_status(&task));
                 launch_tui_if_needed(context, args.tui, Some(task.space_id), None, None)
             }
+            TaskCommand::Archive(args) => {
+                let outcome = context.task_service.archive_task(ArchiveTaskCommand {
+                    task_ref: args.task_ref,
+                })?;
+                let task = outcome.root_task.expect("task archive returns task");
+                println!(
+                    "{}",
+                    output::format_archived_task(&task, outcome.affected_count)
+                );
+                launch_tui_if_needed(context, args.tui, Some(task.space_id), None, None)
+            }
+            TaskCommand::Restore(args) => {
+                let outcome = context.task_service.restore_task(RestoreTaskCommand {
+                    task_ref: args.task_ref,
+                    status: args
+                        .status
+                        .map(Into::into)
+                        .unwrap_or(crate::domain::TaskStatus::Todo),
+                })?;
+                let task = outcome.root_task.expect("task restore returns task");
+                println!(
+                    "{}",
+                    output::format_restored_task(&task, outcome.affected_count)
+                );
+                launch_tui_if_needed(context, args.tui, Some(task.space_id), None, None)
+            }
             TaskCommand::Log(log_args) => match log_args.command {
                 TaskLogCommand::Add(args) => {
                     let task = context.task_service.add_task_log(AddTaskLogCommand {
@@ -144,6 +201,19 @@ pub fn dispatch(context: &AppContext, cli: TodoCli) -> Result<(), AppError> {
                     launch_tui_if_needed(context, args.tui, Some(task.space_id), None, None)
                 }
             },
+            TaskCommand::Purge(args) => {
+                let _ = args.force;
+                let outcome = context.task_service.purge_task(PurgeTaskCommand {
+                    task_ref: args.task_ref,
+                    recursive: args.recursive,
+                })?;
+                let task = outcome.root_task.expect("task purge returns prior task");
+                println!(
+                    "{}",
+                    output::format_purged_task(&task, outcome.affected_count)
+                );
+                Ok(())
+            }
         },
     }
 }

@@ -62,6 +62,38 @@ pub struct AddTaskLogCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveTaskCommand {
+    pub task_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoreTaskCommand {
+    pub task_ref: String,
+    pub status: TaskStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PurgeTaskCommand {
+    pub task_ref: String,
+    pub recursive: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveSpaceCommand {
+    pub space_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestoreSpaceCommand {
+    pub space_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PurgeSpaceCommand {
+    pub space_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TuiLaunchCommand {
     pub space_ref: Option<String>,
     pub space_id: Option<SpaceId>,

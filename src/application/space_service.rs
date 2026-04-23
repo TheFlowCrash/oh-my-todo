@@ -1,11 +1,16 @@
 use crate::application::commands::{
-    CreateSpaceCommand, RenameSpaceCommand, SetCurrentSpaceCommand,
+    ArchiveSpaceCommand, CreateSpaceCommand, PurgeSpaceCommand, RenameSpaceCommand,
+    RestoreSpaceCommand, SetCurrentSpaceCommand,
 };
 use crate::application::error::AppError;
-use crate::application::queries::{ListSpacesQuery, ShowSpaceQuery, SpaceDetails, SpaceSummary};
+use crate::application::maintenance_service::{MaintenanceService, next_active_space_id};
+use crate::application::queries::{
+    ListSpacesQuery, OperationOutcome, ShowSpaceQuery, SpaceDetails, SpaceSummary,
+};
 use crate::application::task_query::derive_space_counts;
 use crate::domain::{
-    AppConfig, AppState, Space, SpaceState, ensure_non_empty_space_name, resolve_space_ref, slugify,
+    AppConfig, AppState, PendingOperationEntry, PendingOperationKind, Space, SpaceId, SpaceState,
+    StateMutation, ensure_non_empty_space_name, resolve_space_ref, slugify,
 };
 use crate::storage::AppRepository;
 use std::sync::Arc;
@@ -14,11 +19,16 @@ use time::OffsetDateTime;
 #[derive(Clone)]
 pub struct SpaceService {
     repository: Arc<dyn AppRepository>,
+    maintenance_service: MaintenanceService,
 }
 
 impl SpaceService {
     pub fn new(repository: Arc<dyn AppRepository>) -> Self {
-        Self { repository }
+        let maintenance_service = MaintenanceService::new(repository.clone());
+        Self {
+            repository,
+            maintenance_service,
+        }
     }
 
     pub fn load_app_config(&self) -> Result<AppConfig, AppError> {
@@ -29,7 +39,7 @@ impl SpaceService {
         self.repository.load_state().map_err(AppError::from)
     }
 
-    pub fn load_space(&self, space_id: &crate::domain::SpaceId) -> Result<Space, AppError> {
+    pub fn load_space(&self, space_id: &SpaceId) -> Result<Space, AppError> {
         self.repository.load_space(space_id).map_err(AppError::from)
     }
 
@@ -107,6 +117,107 @@ impl SpaceService {
         space.rename(command.new_name, OffsetDateTime::now_utc());
         self.repository.save_space(&space)?;
         Ok(space)
+    }
+
+    pub fn archive_space(
+        &self,
+        command: ArchiveSpaceCommand,
+    ) -> Result<OperationOutcome, AppError> {
+        let mut spaces = self.repository.list_spaces()?;
+        let space_id = resolve_space_ref(&command.space_ref, spaces.iter())?;
+        let index = spaces
+            .iter()
+            .position(|space| space.id == space_id)
+            .expect("resolved space id must exist");
+        let current_space_id = self.repository.load_state()?.current_space_id;
+        let mut space = spaces[index].clone();
+        space.state = SpaceState::Archived;
+        space.updated_at = OffsetDateTime::now_utc();
+        spaces[index] = space.clone();
+
+        let next_current_space_id = if current_space_id.as_ref() == Some(&space.id) {
+            next_active_space_id(Some(&space.id), &spaces, Some(&space.id))
+        } else {
+            current_space_id
+        };
+
+        self.maintenance_service.execute_operation(
+            PendingOperationKind::SpaceArchive,
+            vec![
+                PendingOperationEntry::SpaceUpsert(space.clone()),
+                PendingOperationEntry::StateUpdate(StateMutation {
+                    current_space_id: next_current_space_id,
+                    cleared_space_memory_ids: Vec::new(),
+                }),
+            ],
+        )?;
+
+        let space = self.repository.load_space(&space.id)?;
+        Ok(OperationOutcome {
+            root_task: None,
+            root_space: Some(space),
+            affected_count: 1,
+        })
+    }
+
+    pub fn restore_space(
+        &self,
+        command: RestoreSpaceCommand,
+    ) -> Result<OperationOutcome, AppError> {
+        let mut space = self.resolve_space(&command.space_ref, false)?;
+        if !space.state.is_active() {
+            space.state = SpaceState::Active;
+            space.updated_at = OffsetDateTime::now_utc();
+        }
+
+        self.maintenance_service.execute_operation(
+            PendingOperationKind::SpaceRestore,
+            vec![PendingOperationEntry::SpaceUpsert(space.clone())],
+        )?;
+
+        let space = self.repository.load_space(&space.id)?;
+        Ok(OperationOutcome {
+            root_task: None,
+            root_space: Some(space),
+            affected_count: 1,
+        })
+    }
+
+    pub fn purge_space(&self, command: PurgeSpaceCommand) -> Result<OperationOutcome, AppError> {
+        let space = self.resolve_space(&command.space_ref, false)?;
+        if space.state.is_active() {
+            return Err(AppError::SpaceMustBeArchived {
+                space_id: space.id.clone(),
+                action: "purge",
+            });
+        }
+
+        let spaces = self.repository.list_spaces()?;
+        let current_space_id = self.repository.load_state()?.current_space_id;
+        let next_current_space_id = if current_space_id.as_ref() == Some(&space.id) {
+            next_active_space_id(current_space_id.as_ref(), &spaces, Some(&space.id))
+        } else {
+            current_space_id
+        };
+
+        self.maintenance_service.execute_operation(
+            PendingOperationKind::SpacePurge,
+            vec![
+                PendingOperationEntry::StateUpdate(StateMutation {
+                    current_space_id: next_current_space_id,
+                    cleared_space_memory_ids: vec![space.id.clone()],
+                }),
+                PendingOperationEntry::SpaceDelete {
+                    space_id: space.id.clone(),
+                },
+            ],
+        )?;
+
+        Ok(OperationOutcome {
+            root_task: None,
+            root_space: Some(space),
+            affected_count: 1,
+        })
     }
 
     pub fn resolve_space(&self, reference: &str, require_active: bool) -> Result<Space, AppError> {

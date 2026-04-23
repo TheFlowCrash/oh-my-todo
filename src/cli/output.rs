@@ -1,7 +1,10 @@
-use crate::application::queries::{SpaceDetails, SpaceSummary, TaskDetails, TaskListResult};
+use crate::application::queries::{
+    DoctorIssue, DoctorReport, SpaceDetails, SpaceSummary, TaskDetails, TaskListResult,
+};
 use crate::domain::{Space, SpaceState, Task, TaskStatus};
-use time::format_description::well_known::Rfc3339;
+use crate::storage::TaskBucket;
 use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
 pub fn format_created_space(space: &Space) -> String {
     format!(
@@ -65,6 +68,64 @@ pub fn format_logged_task(task: &Task) -> String {
         task.id.short_id(),
         task.title,
         task.id
+    )
+}
+
+pub fn format_archived_task(task: &Task, affected_count: usize) -> String {
+    format!(
+        "Archived task [{}] {} ({}) across {} task(s)",
+        task.id.short_id(),
+        task.title,
+        task.id,
+        affected_count
+    )
+}
+
+pub fn format_restored_task(task: &Task, affected_count: usize) -> String {
+    format!(
+        "Restored task [{}] {} ({}) as {} across {} task(s)",
+        task.id.short_id(),
+        task.title,
+        task.id,
+        format_task_status_name(task.status),
+        affected_count
+    )
+}
+
+pub fn format_purged_task(task: &Task, affected_count: usize) -> String {
+    format!(
+        "Purged task [{}] {} ({}) across {} task(s)",
+        task.id.short_id(),
+        task.title,
+        task.id,
+        affected_count
+    )
+}
+
+pub fn format_archived_space(space: &Space) -> String {
+    format!(
+        "Archived space [{}] {} ({})",
+        space.id.short_id(),
+        space.name,
+        space.id
+    )
+}
+
+pub fn format_restored_space(space: &Space) -> String {
+    format!(
+        "Restored space [{}] {} ({})",
+        space.id.short_id(),
+        space.name,
+        space.id
+    )
+}
+
+pub fn format_purged_space(space: &Space) -> String {
+    format!(
+        "Purged space [{}] {} ({})",
+        space.id.short_id(),
+        space.name,
+        space.id
     )
 }
 
@@ -206,6 +267,19 @@ pub fn render_task(details: &TaskDetails) -> String {
     .join("\n")
 }
 
+pub fn render_doctor_report(report: &DoctorReport) -> String {
+    if report.issues.is_empty() {
+        return "No problems found.".to_owned();
+    }
+
+    let mut lines = vec![format!("Problems found: {}", report.issues.len())];
+    for issue in &report.issues {
+        lines.push(format!("- {}", format_doctor_issue(issue)));
+    }
+
+    lines.join("\n")
+}
+
 pub fn format_task_status_name(status: TaskStatus) -> &'static str {
     match status {
         TaskStatus::Todo => "todo",
@@ -248,12 +322,46 @@ fn format_space_state(state: SpaceState) -> &'static str {
     }
 }
 
-fn yes_no(value: bool) -> &'static str {
-    if value {
-        "yes"
-    } else {
-        "no"
+fn format_doctor_issue(issue: &DoctorIssue) -> String {
+    match issue {
+        DoctorIssue::PendingOperation { operation_id, kind } => {
+            format!("pending operation {operation_id} ({})", kind.as_str())
+        }
+        DoctorIssue::MissingParent { task_id, parent_id } => {
+            format!("task {task_id} has missing parent {parent_id}")
+        }
+        DoctorIssue::CrossSpaceParent {
+            task_id,
+            task_space_id,
+            parent_id,
+            parent_space_id,
+        } => format!(
+            "task {task_id} in space {task_space_id} points to parent {parent_id} in space {parent_space_id}"
+        ),
+        DoctorIssue::ParentCycle { task_id } => {
+            format!("task {task_id} participates in a parent cycle")
+        }
+        DoctorIssue::BucketStatusMismatch {
+            task_id,
+            bucket,
+            status,
+        } => format!(
+            "task {task_id} is stored in {} but has status {}",
+            format_bucket(*bucket),
+            format_task_status_name(*status)
+        ),
     }
+}
+
+fn format_bucket(bucket: TaskBucket) -> &'static str {
+    match bucket {
+        TaskBucket::Todo => "todo/",
+        TaskBucket::Archive => "archive/",
+    }
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
 }
 
 fn format_timestamp(value: OffsetDateTime) -> String {

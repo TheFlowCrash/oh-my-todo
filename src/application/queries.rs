@@ -1,4 +1,8 @@
-use crate::domain::{SortMode, Space, SpaceCounts, Task, TaskLog, ViewMode};
+use crate::domain::{
+    PendingOperationKind, SortMode, Space, SpaceCounts, SpaceId, Task, TaskId, TaskLog, TaskStatus,
+    ViewMode,
+};
+use crate::storage::TaskBucket;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListSpacesQuery {
@@ -58,4 +62,42 @@ pub struct TaskDetails {
     pub parent: Option<Task>,
     pub children: Vec<Task>,
     pub logs: Vec<TaskLog>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperationOutcome {
+    pub root_task: Option<Task>,
+    pub root_space: Option<Space>,
+    pub affected_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DoctorReport {
+    pub issues: Vec<DoctorIssue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DoctorIssue {
+    PendingOperation {
+        operation_id: String,
+        kind: PendingOperationKind,
+    },
+    MissingParent {
+        task_id: TaskId,
+        parent_id: TaskId,
+    },
+    CrossSpaceParent {
+        task_id: TaskId,
+        task_space_id: SpaceId,
+        parent_id: TaskId,
+        parent_space_id: SpaceId,
+    },
+    ParentCycle {
+        task_id: TaskId,
+    },
+    BucketStatusMismatch {
+        task_id: TaskId,
+        bucket: TaskBucket,
+        status: TaskStatus,
+    },
 }

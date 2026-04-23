@@ -1,4 +1,4 @@
-use crate::domain::{ReferenceError, SpaceId, TaskId, ValidationError};
+use crate::domain::{PendingOperationKind, ReferenceError, SpaceId, TaskId, ValidationError};
 use crate::storage::StorageError;
 use std::process::ExitCode;
 use thiserror::Error;
@@ -40,6 +40,37 @@ pub enum AppError {
     SpaceSlugConflict(String),
     #[error("task edit requires at least one change")]
     NoTaskChanges,
+    #[error("task `{task_id}` must be archived before `{action}`")]
+    TaskMustBeArchived {
+        task_id: TaskId,
+        action: &'static str,
+    },
+    #[error("space `{space_id}` must be archived before `{action}`")]
+    SpaceMustBeArchived {
+        space_id: SpaceId,
+        action: &'static str,
+    },
+    #[error("task `{task_id}` has {child_count} child tasks; rerun with `--recursive`")]
+    TaskPurgeRequiresRecursive { task_id: TaskId, child_count: usize },
+    #[error("task `{task_id}` cannot be restored while ancestor `{ancestor_id}` remains archived")]
+    TaskRestoreBlockedByArchivedAncestor {
+        task_id: TaskId,
+        ancestor_id: TaskId,
+    },
+    #[error(
+        "task subtree rooted at `{task_id}` contains non-archived task `{offender_id}` and cannot be purged"
+    )]
+    TaskPurgeRequiresArchivedSubtree {
+        task_id: TaskId,
+        offender_id: TaskId,
+    },
+    #[error(
+        "another multi-file operation `{operation_id}` ({kind}) is still pending; recover it first"
+    )]
+    PendingOperationInProgress {
+        operation_id: String,
+        kind: PendingOperationKind,
+    },
 }
 
 impl AppError {
@@ -59,7 +90,13 @@ impl AppError {
             | Self::TaskParentCycle { .. }
             | Self::CrossSpaceParentMismatch { .. }
             | Self::SpaceSlugConflict(_)
-            | Self::NoTaskChanges => ExitCode::from(5),
+            | Self::NoTaskChanges
+            | Self::TaskMustBeArchived { .. }
+            | Self::SpaceMustBeArchived { .. }
+            | Self::TaskPurgeRequiresRecursive { .. }
+            | Self::TaskRestoreBlockedByArchivedAncestor { .. }
+            | Self::TaskPurgeRequiresArchivedSubtree { .. }
+            | Self::PendingOperationInProgress { .. } => ExitCode::from(5),
         }
     }
 
@@ -85,6 +122,32 @@ impl AppError {
                 Some("use `--clear-parent` or set a new parent in the target space")
             }
             Self::NoTaskChanges => Some("pass at least one edit flag such as --title or --status"),
+            Self::TaskMustBeArchived {
+                action: "restore", ..
+            } => Some(
+                "use `todo task status set <TASK_REF> ...` for done tasks; restore only applies to archived tasks",
+            ),
+            Self::TaskMustBeArchived {
+                action: "purge", ..
+            } => Some("archive the task first with `todo task archive <TASK_REF>`"),
+            Self::SpaceMustBeArchived {
+                action: "restore", ..
+            } => Some("restore only applies to archived spaces"),
+            Self::SpaceMustBeArchived {
+                action: "purge", ..
+            } => Some("archive the space first with `todo space archive <SPACE_REF>`"),
+            Self::TaskPurgeRequiresRecursive { .. } => {
+                Some("rerun the command with `--recursive` to purge the whole subtree")
+            }
+            Self::TaskRestoreBlockedByArchivedAncestor { .. } => {
+                Some("restore the archived ancestor first, or restore from the subtree root")
+            }
+            Self::TaskPurgeRequiresArchivedSubtree { .. } => {
+                Some("only fully archived subtrees can be purged")
+            }
+            Self::PendingOperationInProgress { .. } => {
+                Some("restart the app to auto-recover the pending operation, or run `todo doctor`")
+            }
             _ => None,
         }
     }

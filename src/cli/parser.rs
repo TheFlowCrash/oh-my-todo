@@ -12,6 +12,7 @@ pub enum RootCommand {
     Tui(TuiArgs),
     Task(TaskArgs),
     Space(SpaceArgs),
+    Doctor,
 }
 
 #[derive(Debug, Args)]
@@ -38,7 +39,10 @@ pub enum TaskCommand {
     Edit(TaskEditArgs),
     Status(TaskStatusArgs),
     Done(TaskDoneArgs),
+    Archive(TaskArchiveArgs),
+    Restore(TaskRestoreArgs),
     Log(TaskLogArgs),
+    Purge(TaskPurgeArgs),
 }
 
 #[derive(Debug, Args)]
@@ -54,6 +58,9 @@ pub enum SpaceCommand {
     Show(SpaceShowArgs),
     Use(SpaceUseArgs),
     Rename(SpaceRenameArgs),
+    Archive(SpaceArchiveArgs),
+    Restore(SpaceRestoreArgs),
+    Purge(SpacePurgeArgs),
 }
 
 #[derive(Debug, Args)]
@@ -134,6 +141,22 @@ pub struct TaskDoneArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct TaskArchiveArgs {
+    pub task_ref: String,
+    #[arg(long)]
+    pub tui: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct TaskRestoreArgs {
+    pub task_ref: String,
+    #[arg(long)]
+    pub status: Option<ActiveTaskStatusArg>,
+    #[arg(long)]
+    pub tui: bool,
+}
+
+#[derive(Debug, Args)]
 pub struct TaskLogArgs {
     #[command(subcommand)]
     pub command: TaskLogCommand,
@@ -150,6 +173,15 @@ pub struct TaskLogAddArgs {
     pub text: String,
     #[arg(long)]
     pub tui: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct TaskPurgeArgs {
+    pub task_ref: String,
+    #[arg(long, required = true)]
+    pub force: bool,
+    #[arg(long)]
+    pub recursive: bool,
 }
 
 #[derive(Debug, Args)]
@@ -183,6 +215,27 @@ pub struct SpaceRenameArgs {
     pub new_name: String,
     #[arg(long)]
     pub tui: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SpaceArchiveArgs {
+    pub space_ref: String,
+    #[arg(long)]
+    pub tui: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SpaceRestoreArgs {
+    pub space_ref: String,
+    #[arg(long)]
+    pub tui: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SpacePurgeArgs {
+    pub space_ref: String,
+    #[arg(long, required = true)]
+    pub force: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

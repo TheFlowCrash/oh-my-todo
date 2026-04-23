@@ -31,6 +31,18 @@ pub struct RepositorySnapshot {
     pub spaces: Vec<Space>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskBucket {
+    Todo,
+    Archive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredTaskRecord {
+    pub task: Task,
+    pub bucket: TaskBucket,
+}
+
 pub trait AppRepository: Send + Sync {
     fn paths(&self) -> &DataPaths;
     fn initialize(&self) -> Result<RepositorySnapshot, StorageError>;
@@ -41,10 +53,17 @@ pub trait AppRepository: Send + Sync {
     fn list_spaces(&self) -> Result<Vec<Space>, StorageError>;
     fn load_space(&self, space_id: &SpaceId) -> Result<Space, StorageError>;
     fn save_space(&self, space: &Space) -> Result<(), StorageError>;
+    fn list_task_records_in_space(
+        &self,
+        space_id: &SpaceId,
+    ) -> Result<Vec<StoredTaskRecord>, StorageError>;
+    fn list_all_task_records(&self) -> Result<Vec<StoredTaskRecord>, StorageError>;
     fn list_tasks_in_space(&self, space_id: &SpaceId) -> Result<Vec<Task>, StorageError>;
     fn list_all_tasks(&self) -> Result<Vec<Task>, StorageError>;
     fn load_task(&self, task_id: &TaskId) -> Result<Task, StorageError>;
     fn save_task(&self, task: &Task) -> Result<(), StorageError>;
+    fn delete_task(&self, task_id: &TaskId) -> Result<(), StorageError>;
+    fn delete_space(&self, space_id: &SpaceId) -> Result<(), StorageError>;
 }
 
 #[derive(Debug, Clone)]
@@ -159,21 +178,36 @@ impl AppRepository for FilesystemRepository {
         write_ron_file(&self.paths.space_file(&space.id), space)
     }
 
-    fn list_tasks_in_space(&self, space_id: &SpaceId) -> Result<Vec<Task>, StorageError> {
+    fn list_task_records_in_space(
+        &self,
+        space_id: &SpaceId,
+    ) -> Result<Vec<StoredTaskRecord>, StorageError> {
         self.ensure_layout()?;
-        let mut tasks = load_tasks_from_dir(&self.paths.space_todo_dir(space_id))?;
-        tasks.extend(load_tasks_from_dir(
+        let mut tasks =
+            load_task_records_from_dir(&self.paths.space_todo_dir(space_id), TaskBucket::Todo)?;
+        tasks.extend(load_task_records_from_dir(
             &self.paths.space_archive_dir(space_id),
+            TaskBucket::Archive,
         )?);
         Ok(tasks)
     }
 
-    fn list_all_tasks(&self) -> Result<Vec<Task>, StorageError> {
+    fn list_all_task_records(&self) -> Result<Vec<StoredTaskRecord>, StorageError> {
         let mut tasks = Vec::new();
         for space in self.list_spaces()? {
-            tasks.extend(self.list_tasks_in_space(&space.id)?);
+            tasks.extend(self.list_task_records_in_space(&space.id)?);
         }
         Ok(tasks)
+    }
+
+    fn list_tasks_in_space(&self, space_id: &SpaceId) -> Result<Vec<Task>, StorageError> {
+        self.list_task_records_in_space(space_id)
+            .map(|records| records.into_iter().map(|record| record.task).collect())
+    }
+
+    fn list_all_tasks(&self) -> Result<Vec<Task>, StorageError> {
+        self.list_all_task_records()
+            .map(|records| records.into_iter().map(|record| record.task).collect())
     }
 
     fn load_task(&self, task_id: &TaskId) -> Result<Task, StorageError> {
@@ -205,9 +239,39 @@ impl AppRepository for FilesystemRepository {
 
         Ok(())
     }
+
+    fn delete_task(&self, task_id: &TaskId) -> Result<(), StorageError> {
+        for space in self.list_spaces()? {
+            for bucket in [TaskBucket::Todo, TaskBucket::Archive] {
+                let candidate_path =
+                    self.paths
+                        .task_path_for_id(&space.id, task_id, bucket.as_str());
+                if candidate_path.exists() {
+                    fs::remove_file(&candidate_path).map_err(|source| StorageError::Io {
+                        path: candidate_path,
+                        source,
+                    })?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn delete_space(&self, space_id: &SpaceId) -> Result<(), StorageError> {
+        let path = self.paths.space_dir(space_id);
+        if path.exists() {
+            fs::remove_dir_all(&path).map_err(|source| StorageError::Io { path, source })?;
+        }
+
+        Ok(())
+    }
 }
 
-fn load_tasks_from_dir(dir: &Path) -> Result<Vec<Task>, StorageError> {
+fn load_task_records_from_dir(
+    dir: &Path,
+    bucket: TaskBucket,
+) -> Result<Vec<StoredTaskRecord>, StorageError> {
     if !dir.exists() {
         return Ok(Vec::new());
     }
@@ -219,7 +283,10 @@ fn load_tasks_from_dir(dir: &Path) -> Result<Vec<Task>, StorageError> {
             continue;
         }
 
-        tasks.push(read_ron_file(&path)?);
+        tasks.push(StoredTaskRecord {
+            task: read_ron_file(&path)?,
+            bucket,
+        });
     }
 
     Ok(tasks)
@@ -239,4 +306,13 @@ fn read_dir_sorted(dir: &Path) -> Result<Vec<fs::DirEntry>, StorageError> {
 
     entries.sort_by_key(|entry| entry.path());
     Ok(entries)
+}
+
+impl TaskBucket {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Todo => "todo",
+            Self::Archive => "archive",
+        }
+    }
 }

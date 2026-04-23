@@ -1,11 +1,16 @@
 use crate::application::commands::{
-    AddTaskLogCommand, CreateTaskCommand, EditTaskCommand, UpdateTaskStatusCommand,
+    AddTaskLogCommand, ArchiveTaskCommand, CreateTaskCommand, EditTaskCommand, PurgeTaskCommand,
+    RestoreTaskCommand, UpdateTaskStatusCommand,
 };
 use crate::application::error::AppError;
-use crate::application::queries::{ListTasksQuery, ShowTaskQuery, TaskDetails, TaskListResult};
+use crate::application::maintenance_service::MaintenanceService;
+use crate::application::queries::{
+    ListTasksQuery, OperationOutcome, ShowTaskQuery, TaskDetails, TaskListResult,
+};
 use crate::application::task_query::{build_task_list, sort_tasks_in_place};
 use crate::domain::{
-    SortMode, Space, Task, TaskLog, TaskStatus, ViewMode, ensure_non_empty_title, resolve_task_ref,
+    PendingOperationEntry, PendingOperationKind, SortMode, Space, Task, TaskId, TaskLog,
+    TaskStatus, ViewMode, ensure_non_empty_title, resolve_task_ref,
 };
 use crate::storage::AppRepository;
 use std::collections::HashSet;
@@ -15,11 +20,16 @@ use time::OffsetDateTime;
 #[derive(Clone)]
 pub struct TaskService {
     repository: Arc<dyn AppRepository>,
+    maintenance_service: MaintenanceService,
 }
 
 impl TaskService {
     pub fn new(repository: Arc<dyn AppRepository>) -> Self {
-        Self { repository }
+        let maintenance_service = MaintenanceService::new(repository.clone());
+        Self {
+            repository,
+            maintenance_service,
+        }
     }
 
     pub fn create_task(&self, command: CreateTaskCommand) -> Result<Task, AppError> {
@@ -271,7 +281,142 @@ impl TaskService {
         Ok(task)
     }
 
-    pub fn load_task(&self, task_id: &crate::domain::TaskId) -> Result<Task, AppError> {
+    pub fn archive_task(&self, command: ArchiveTaskCommand) -> Result<OperationOutcome, AppError> {
+        let all_tasks = self.repository.list_all_tasks()?;
+        let root_task = self.resolve_task_from(&all_tasks, &command.task_ref)?;
+        let subtree_ids = collect_subtree_ids(&all_tasks, &root_task.id);
+        let now = OffsetDateTime::now_utc();
+
+        let updated_tasks = all_tasks
+            .iter()
+            .filter(|task| subtree_ids.contains(&task.id))
+            .cloned()
+            .map(|mut task| {
+                task.status = TaskStatus::Archived;
+                task.touch(now);
+                task
+            })
+            .collect::<Vec<_>>();
+
+        self.maintenance_service.execute_operation(
+            PendingOperationKind::TaskArchive,
+            updated_tasks
+                .iter()
+                .cloned()
+                .map(PendingOperationEntry::TaskUpsert)
+                .collect(),
+        )?;
+
+        let root_task = self.repository.load_task(&root_task.id)?;
+        Ok(OperationOutcome {
+            root_task: Some(root_task),
+            root_space: None,
+            affected_count: updated_tasks.len(),
+        })
+    }
+
+    pub fn restore_task(&self, command: RestoreTaskCommand) -> Result<OperationOutcome, AppError> {
+        ensure_active_status(command.status)?;
+
+        let all_tasks = self.repository.list_all_tasks()?;
+        let root_task = self.resolve_task_from(&all_tasks, &command.task_ref)?;
+        if !root_task.status.is_archived() {
+            return Err(AppError::TaskMustBeArchived {
+                task_id: root_task.id,
+                action: "restore",
+            });
+        }
+
+        if let Some(ancestor_id) = first_archived_ancestor_id(&all_tasks, &root_task) {
+            return Err(AppError::TaskRestoreBlockedByArchivedAncestor {
+                task_id: root_task.id,
+                ancestor_id,
+            });
+        }
+
+        let subtree_ids = collect_subtree_ids(&all_tasks, &root_task.id);
+        let now = OffsetDateTime::now_utc();
+        let updated_tasks = all_tasks
+            .iter()
+            .filter(|task| subtree_ids.contains(&task.id))
+            .cloned()
+            .map(|mut task| {
+                task.status = command.status;
+                task.touch(now);
+                task
+            })
+            .collect::<Vec<_>>();
+
+        self.maintenance_service.execute_operation(
+            PendingOperationKind::TaskRestore,
+            updated_tasks
+                .iter()
+                .cloned()
+                .map(PendingOperationEntry::TaskUpsert)
+                .collect(),
+        )?;
+
+        let root_task = self.repository.load_task(&root_task.id)?;
+        Ok(OperationOutcome {
+            root_task: Some(root_task),
+            root_space: None,
+            affected_count: updated_tasks.len(),
+        })
+    }
+
+    pub fn purge_task(&self, command: PurgeTaskCommand) -> Result<OperationOutcome, AppError> {
+        let all_tasks = self.repository.list_all_tasks()?;
+        let root_task = self.resolve_task_from(&all_tasks, &command.task_ref)?;
+        if !root_task.status.is_archived() {
+            return Err(AppError::TaskMustBeArchived {
+                task_id: root_task.id.clone(),
+                action: "purge",
+            });
+        }
+
+        let subtree_ids = collect_subtree_ids(&all_tasks, &root_task.id);
+        if subtree_ids.len() > 1 && !command.recursive {
+            return Err(AppError::TaskPurgeRequiresRecursive {
+                task_id: root_task.id.clone(),
+                child_count: subtree_ids.len() - 1,
+            });
+        }
+
+        if let Some(offender) = all_tasks
+            .iter()
+            .find(|task| subtree_ids.contains(&task.id) && !task.status.is_archived())
+        {
+            return Err(AppError::TaskPurgeRequiresArchivedSubtree {
+                task_id: root_task.id.clone(),
+                offender_id: offender.id.clone(),
+            });
+        }
+
+        let mut tasks_to_delete = all_tasks
+            .iter()
+            .filter(|task| subtree_ids.contains(&task.id))
+            .cloned()
+            .collect::<Vec<_>>();
+        tasks_to_delete.sort_by_key(|task| std::cmp::Reverse(task.created_at));
+
+        self.maintenance_service.execute_operation(
+            PendingOperationKind::TaskPurge,
+            tasks_to_delete
+                .iter()
+                .map(|task| PendingOperationEntry::TaskDelete {
+                    task_id: task.id.clone(),
+                })
+                .collect(),
+        )?;
+
+        Ok(OperationOutcome {
+            root_task: Some(root_task),
+            root_space: None,
+            affected_count: tasks_to_delete.len(),
+        })
+    }
+
+    pub fn load_task(&self, task_id: &TaskId) -> Result<Task, AppError> {
         self.repository.load_task(task_id).map_err(AppError::from)
     }
 
@@ -331,7 +476,7 @@ impl TaskService {
     }
 }
 
-fn ensure_active_status(status: TaskStatus) -> Result<(), AppError> {
+pub(crate) fn ensure_active_status(status: TaskStatus) -> Result<(), AppError> {
     if status.is_archived() {
         Err(AppError::ArchivedStatusNotAllowed)
     } else {
@@ -339,7 +484,7 @@ fn ensure_active_status(status: TaskStatus) -> Result<(), AppError> {
     }
 }
 
-fn ensure_active_space(space: &Space) -> Result<(), AppError> {
+pub(crate) fn ensure_active_space(space: &Space) -> Result<(), AppError> {
     if !space.state.is_active() {
         Err(AppError::ArchivedSpace(space.id.as_str().to_owned()))
     } else {
@@ -347,11 +492,11 @@ fn ensure_active_space(space: &Space) -> Result<(), AppError> {
     }
 }
 
-fn next_sort_order(
+pub(crate) fn next_sort_order(
     tasks: &[Task],
     space_id: &crate::domain::SpaceId,
-    parent_id: Option<&crate::domain::TaskId>,
-    excluded_ids: &HashSet<crate::domain::TaskId>,
+    parent_id: Option<&TaskId>,
+    excluded_ids: &HashSet<TaskId>,
 ) -> i64 {
     tasks
         .iter()
@@ -364,10 +509,7 @@ fn next_sort_order(
         + 1
 }
 
-fn collect_subtree_ids(
-    tasks: &[Task],
-    root_id: &crate::domain::TaskId,
-) -> HashSet<crate::domain::TaskId> {
+pub(crate) fn collect_subtree_ids(tasks: &[Task], root_id: &TaskId) -> HashSet<TaskId> {
     let mut stack = vec![root_id.clone()];
     let mut seen = HashSet::new();
 
@@ -385,4 +527,19 @@ fn collect_subtree_ids(
     }
 
     seen
+}
+
+fn first_archived_ancestor_id(tasks: &[Task], task: &Task) -> Option<TaskId> {
+    let mut parent_id = task.parent_id.clone();
+    while let Some(current_parent_id) = parent_id {
+        let parent = tasks
+            .iter()
+            .find(|candidate| candidate.id == current_parent_id)?;
+        if parent.status.is_archived() {
+            return Some(parent.id.clone());
+        }
+        parent_id = parent.parent_id.clone();
+    }
+
+    None
 }

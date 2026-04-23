@@ -1,6 +1,7 @@
 use crate::domain::{SpaceId, TaskId};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::fmt;
 use time::OffsetDateTime;
 
 pub const APP_SCHEMA_VERSION: u32 = 1;
@@ -109,13 +110,40 @@ pub struct SpaceViewMemory {
     pub details_scroll: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingOperationKind {
+    TaskArchive,
+    TaskRestore,
+    TaskPurge,
+    SpaceArchive,
+    SpaceRestore,
+    SpacePurge,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct StateMutation {
+    pub current_space_id: Option<SpaceId>,
+    pub cleared_space_memory_ids: Vec<SpaceId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingOperationEntry {
+    TaskUpsert(Task),
+    TaskDelete { task_id: TaskId },
+    SpaceUpsert(Space),
+    SpaceDelete { space_id: SpaceId },
+    StateUpdate(StateMutation),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingOperation {
     pub operation_id: String,
-    pub kind: String,
+    pub kind: PendingOperationKind,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
-    pub affected_paths: Vec<String>,
+    pub entries: Vec<PendingOperationEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -155,6 +183,25 @@ impl TaskStatus {
 impl SpaceState {
     pub fn is_active(self) -> bool {
         matches!(self, Self::Active)
+    }
+}
+
+impl PendingOperationKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TaskArchive => "task_archive",
+            Self::TaskRestore => "task_restore",
+            Self::TaskPurge => "task_purge",
+            Self::SpaceArchive => "space_archive",
+            Self::SpaceRestore => "space_restore",
+            Self::SpacePurge => "space_purge",
+        }
+    }
+}
+
+impl fmt::Display for PendingOperationKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str((*self).as_str())
     }
 }
 

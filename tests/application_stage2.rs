@@ -1,4 +1,4 @@
-use oh_my_todo::application::bootstrap::{bootstrap, BootstrapOptions};
+use oh_my_todo::application::bootstrap::{BootstrapOptions, bootstrap};
 use oh_my_todo::application::commands::{
     CreateSpaceCommand, CreateTaskCommand, EditTaskCommand, RenameSpaceCommand,
     SetCurrentSpaceCommand,
