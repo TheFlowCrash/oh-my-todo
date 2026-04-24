@@ -22,15 +22,13 @@ pub fn render(frame: &mut Frame, app: &mut TuiApp) {
     let area = frame.area();
     app.set_frame_area(area);
     let layout = Layout::vertical([
-        Constraint::Length(1),
         Constraint::Length(3),
         Constraint::Fill(1),
         Constraint::Length(1),
     ]);
-    let [status_area, spaces_area, body_area, footer_area] = area.layout(&layout);
+    let [status_area, body_area, footer_area] = area.layout(&layout);
 
     render_status_bar(frame, status_area, app);
-    render_spaces(frame, spaces_area, app);
     if app.is_narrow(area.width) {
         render_narrow_body(frame, body_area, app);
     } else {
@@ -39,6 +37,7 @@ pub fn render(frame: &mut Frame, app: &mut TuiApp) {
     render_footer(frame, footer_area, app);
 
     match app.mode.clone() {
+        Mode::SpaceManager(manager) => render_space_manager(frame, area, app, &manager),
         Mode::Form(FormModal::Space(form)) => render_space_form(frame, area, app, &form),
         Mode::Form(FormModal::Task(form)) => render_task_form(frame, area, app, &form),
         Mode::Form(FormModal::Log(form)) => render_log_form(frame, area, app, &form),
@@ -55,300 +54,506 @@ pub fn render(frame: &mut Frame, app: &mut TuiApp) {
 }
 
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &mut TuiApp) {
-    frame.render_widget(
-        Paragraph::new("").style(Style::default().bg(PANEL_BG)),
-        area,
-    );
-
-    let layout = Layout::horizontal([
-        Constraint::Length(14),
-        Constraint::Length(1),
-        Constraint::Length(22),
-        Constraint::Length(16),
-        Constraint::Length(18),
-        Constraint::Length(34),
-        Constraint::Min(10),
-    ]);
-    let [
-        title_area,
-        spacer_area,
-        view_area,
-        sort_area,
-        filter_area,
-        space_area,
-        message_area,
-    ] = area.layout(&layout);
-
-    frame.render_widget(
-        Paragraph::new(" oh-my-todo ")
-            .style(
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(ACCENT)
-                    .add_modifier(Modifier::BOLD),
-            )
-            .alignment(Alignment::Left),
-        title_area,
-    );
-
-    frame.render_widget(
-        Paragraph::new("").style(Style::default().bg(PANEL_BG)),
-        spacer_area,
-    );
-
-    render_inline_buttons(
-        frame,
-        app,
-        view_area,
-        &[
-            (
-                "Todo",
-                MouseTarget::SwitchView(ViewMode::Todo),
-                app.current_view == ViewMode::Todo,
-                true,
-                false,
-            ),
-            (
-                "Archive",
-                MouseTarget::SwitchView(ViewMode::Archive),
-                app.current_view == ViewMode::Archive,
-                true,
-                false,
-            ),
-            (
-                "All",
-                MouseTarget::SwitchView(ViewMode::All),
-                app.current_view == ViewMode::All,
-                true,
-                false,
-            ),
-        ],
-    );
-
-    let sort_button = button_rect(sort_area.x, sort_area.y, sort_area.width.min(16), 1);
-    render_button(
-        frame,
-        sort_button,
-        &format!("Sort: {}", sort_label(app.current_sort)),
-        false,
-        true,
-        false,
-        app.is_hovered(&MouseTarget::CycleSort),
-    );
-    app.register_hitbox(sort_button, MouseTarget::CycleSort);
-
-    let filter_target = MouseTarget::OpenFilter;
-    let filter_button = button_rect(filter_area.x, filter_area.y, filter_area.width.min(18), 1);
-    render_button(
-        frame,
-        filter_button,
-        &app.filter_label(),
-        !app.task_filter.trim().is_empty(),
-        true,
-        false,
-        app.is_hovered(&filter_target),
-    );
-    app.register_hitbox(filter_button, filter_target);
-
-    frame.render_widget(
-        Paragraph::new(app.space_context_label()).style(
-            Style::default()
-                .fg(TEXT)
-                .bg(PANEL_BG)
-                .add_modifier(Modifier::BOLD),
-        ),
-        space_area,
-    );
-
-    let message = app
-        .status_message
-        .clone()
-        .unwrap_or_else(|| format!("active: {}", active_area_label(app.focus_area)));
-    frame.render_widget(
-        Paragraph::new(message)
-            .alignment(Alignment::Right)
-            .style(Style::default().fg(MUTED).bg(PANEL_BG)),
-        message_area,
-    );
-}
-
-fn render_spaces(frame: &mut Frame, area: Rect, app: &mut TuiApp) {
-    let block = panel_block("Spaces", app.focus_area == FocusArea::Spaces);
+    let block = panel_block("oh-my-todo", false);
     frame.render_widget(block.clone(), area);
     let inner = block.inner(area);
     if inner.width == 0 || inner.height == 0 {
         return;
     }
 
-    let selected_space = app.current_space().cloned();
-    let rename_enabled = selected_space.is_some();
-    let archive_enabled = selected_space
-        .as_ref()
-        .is_some_and(|space| space.space.state.is_active());
-    let restore_enabled = selected_space
-        .as_ref()
-        .is_some_and(|space| space.space.state.is_archived());
-    let purge_enabled = restore_enabled;
+    let layout = Layout::horizontal([Constraint::Min(24), Constraint::Length(21)]);
+    let [meta_area, tabs_area] = inner.layout(&layout);
+    render_header_links(frame, meta_area, app);
+    render_view_tabs(frame, tabs_area, app);
+}
 
-    let mut right_edge = inner.right();
-    let purge_area = allocate_right_button(&mut right_edge, inner.y, "Purge");
-    let lifecycle_label = if restore_enabled {
-        "Restore"
-    } else {
-        "Archive"
-    };
-    let lifecycle_area = allocate_right_button(&mut right_edge, inner.y, lifecycle_label);
-    let rename_area = allocate_right_button(&mut right_edge, inner.y, "Rename");
-    let new_area = allocate_right_button(&mut right_edge, inner.y, "+ New");
-    let all_area = allocate_right_button(&mut right_edge, inner.y, "All");
-    let active_area = allocate_right_button(&mut right_edge, inner.y, "Active");
+fn render_header_links(frame: &mut Frame, area: Rect, app: &mut TuiApp) {
+    let items = vec![
+        (
+            app.space_button_label(),
+            MouseTarget::OpenSpaceManager,
+            matches!(&app.mode, Mode::SpaceManager(_)),
+        ),
+        (
+            format!("Sort: {}", sort_label(app.current_sort)),
+            MouseTarget::CycleSort,
+            false,
+        ),
+        (
+            app.filter_label(),
+            MouseTarget::OpenFilter,
+            !app.task_filter.trim().is_empty(),
+        ),
+    ];
+    let mut spans = Vec::new();
+    let mut x = area.x;
 
-    render_button(
-        frame,
-        active_area,
-        "Active",
-        app.space_list_mode == SpaceListMode::Active,
-        true,
-        false,
-        app.is_hovered(&MouseTarget::SetSpaceListMode(SpaceListMode::Active)),
-    );
-    app.register_hitbox(
-        active_area,
-        MouseTarget::SetSpaceListMode(SpaceListMode::Active),
-    );
+    for (index, (label, target, active)) in items.into_iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled("   ", Style::default().fg(MUTED)));
+            x = x.saturating_add(3);
+        }
 
-    render_button(
-        frame,
-        all_area,
-        "All",
-        app.space_list_mode == SpaceListMode::All,
-        true,
-        false,
-        app.is_hovered(&MouseTarget::SetSpaceListMode(SpaceListMode::All)),
-    );
-    app.register_hitbox(all_area, MouseTarget::SetSpaceListMode(SpaceListMode::All));
-
-    render_button(
-        frame,
-        new_area,
-        "+ New",
-        false,
-        true,
-        false,
-        app.is_hovered(&MouseTarget::OpenSpaceCreate),
-    );
-    app.register_hitbox(new_area, MouseTarget::OpenSpaceCreate);
-
-    render_button(
-        frame,
-        rename_area,
-        "Rename",
-        false,
-        rename_enabled,
-        false,
-        app.is_hovered(&MouseTarget::OpenSpaceRename),
-    );
-    if rename_enabled {
-        app.register_hitbox(rename_area, MouseTarget::OpenSpaceRename);
+        let hovered = app.is_hovered(&target);
+        let style = if active {
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+        } else if hovered {
+            Style::default().fg(TEXT).add_modifier(Modifier::BOLD)
+        } else if index == 0 {
+            Style::default().fg(TEXT)
+        } else {
+            Style::default().fg(MUTED)
+        };
+        let width = label.chars().count() as u16;
+        if width == 0 || x >= area.right() {
+            break;
+        }
+        let rect = Rect::new(x, area.y, width.min(area.right().saturating_sub(x)), 1);
+        spans.push(Span::styled(label, style));
+        app.register_hitbox(rect, target);
+        x = x.saturating_add(width);
     }
 
-    let lifecycle_target = if restore_enabled {
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(PANEL_BG)),
+        area,
+    );
+}
+
+fn render_view_tabs(frame: &mut Frame, area: Rect, app: &mut TuiApp) {
+    let items = [
+        (
+            "Todo",
+            MouseTarget::SwitchView(ViewMode::Todo),
+            app.current_view == ViewMode::Todo,
+        ),
+        (
+            "Archive",
+            MouseTarget::SwitchView(ViewMode::Archive),
+            app.current_view == ViewMode::Archive,
+        ),
+        (
+            "All",
+            MouseTarget::SwitchView(ViewMode::All),
+            app.current_view == ViewMode::All,
+        ),
+    ];
+    let separator = " \u{2506} ";
+    let separator_width = separator.chars().count();
+    let total_width = items
+        .iter()
+        .map(|(label, _, _)| label.chars().count())
+        .sum::<usize>()
+        + separator_width * items.len().saturating_sub(1);
+    let start_x = area
+        .right()
+        .saturating_sub(total_width.min(area.width as usize) as u16);
+    let draw_area = Rect::new(start_x, area.y, area.right().saturating_sub(start_x), 1);
+    let mut spans = Vec::new();
+    let mut x = draw_area.x;
+
+    for (index, (label, target, selected)) in items.into_iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(separator, Style::default().fg(BORDER)));
+            x = x.saturating_add(separator_width as u16);
+        }
+
+        let hovered = app.is_hovered(&target);
+        let style = if selected {
+            Style::default().fg(TEXT).add_modifier(Modifier::BOLD)
+        } else if hovered {
+            Style::default().fg(ACCENT)
+        } else {
+            Style::default().fg(MUTED)
+        };
+        let width = label.chars().count() as u16;
+        if width == 0 || x >= draw_area.right() {
+            break;
+        }
+        spans.push(Span::styled(label, style));
+        app.register_hitbox(
+            Rect::new(
+                x,
+                draw_area.y,
+                width.min(draw_area.right().saturating_sub(x)),
+                1,
+            ),
+            target,
+        );
+        x = x.saturating_add(width);
+    }
+
+    frame.render_widget(
+        Paragraph::new(Line::from(spans))
+            .alignment(Alignment::Right)
+            .style(Style::default().bg(PANEL_BG)),
+        draw_area,
+    );
+}
+
+fn render_space_manager(
+    frame: &mut Frame,
+    area: Rect,
+    app: &mut TuiApp,
+    _manager: &crate::tui::app::SpaceManagerState,
+) {
+    let popup = centered_rect(area, 82, 76);
+    frame.render_widget(Clear, popup);
+    let block = panel_block("Space Manager", true);
+    frame.render_widget(block.clone(), popup);
+    let inner = block.inner(popup);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let selected_space = app.selected_space_summary().cloned();
+    let can_open = selected_space.is_some();
+    let can_rename = selected_space.is_some();
+    let can_archive = selected_space
+        .as_ref()
+        .is_some_and(|space| space.space.state.is_active());
+    let can_restore = selected_space
+        .as_ref()
+        .is_some_and(|space| space.space.state.is_archived());
+    let can_purge = can_restore;
+    let lifecycle_label = if can_restore { "Restore" } else { "Archive" };
+    let lifecycle_target = if can_restore {
         MouseTarget::RestoreSpace
     } else {
         MouseTarget::ArchiveSpace
     };
-    render_button(
-        frame,
-        lifecycle_area,
-        lifecycle_label,
-        false,
-        archive_enabled || restore_enabled,
-        false,
-        app.is_hovered(&lifecycle_target),
-    );
-    if archive_enabled || restore_enabled {
-        app.register_hitbox(lifecycle_area, lifecycle_target);
-    }
 
-    render_button(
-        frame,
-        purge_area,
-        "Purge",
-        false,
-        purge_enabled,
-        true,
-        app.is_hovered(&MouseTarget::OpenPurgeSpace),
-    );
-    if purge_enabled {
-        app.register_hitbox(purge_area, MouseTarget::OpenPurgeSpace);
-    }
+    let layout = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+    ]);
+    let [
+        context_area,
+        utility_area,
+        action_area,
+        body_area,
+        hint_area,
+    ] = inner.layout(&layout);
 
-    let tabs_area = Rect::new(inner.x, inner.y, right_edge.saturating_sub(inner.x), 1);
+    frame.render_widget(
+        Paragraph::new(space_manager_context_text(app))
+            .style(Style::default().fg(MUTED).bg(PANEL_BG)),
+        context_area,
+    );
+
+    render_inline_buttons(
+        frame,
+        app,
+        utility_area,
+        &[
+            (
+                "Active",
+                MouseTarget::SetSpaceListMode(SpaceListMode::Active),
+                app.space_list_mode == SpaceListMode::Active,
+                true,
+                false,
+            ),
+            (
+                "All",
+                MouseTarget::SetSpaceListMode(SpaceListMode::All),
+                app.space_list_mode == SpaceListMode::All,
+                true,
+                false,
+            ),
+            ("+ New", MouseTarget::OpenSpaceCreate, false, true, false),
+            ("Close", MouseTarget::CloseSpaceManager, false, true, false),
+        ],
+    );
+
+    render_inline_buttons(
+        frame,
+        app,
+        action_area,
+        &[
+            (
+                "Open",
+                MouseTarget::OpenSelectedSpace,
+                false,
+                can_open,
+                false,
+            ),
+            (
+                "Rename",
+                MouseTarget::OpenSpaceRename,
+                false,
+                can_rename,
+                false,
+            ),
+            (
+                lifecycle_label,
+                lifecycle_target,
+                false,
+                can_archive || can_restore,
+                false,
+            ),
+            ("Purge", MouseTarget::OpenPurgeSpace, false, can_purge, true),
+        ],
+    );
+
+    let body_layout = Layout::horizontal([Constraint::Percentage(46), Constraint::Percentage(54)]);
+    let [list_area, summary_area] = body_area.layout(&body_layout);
+    render_space_manager_list(frame, list_area, app);
+    render_space_manager_summary(frame, summary_area, app);
+
+    frame.render_widget(
+        Paragraph::new(
+            "Markers: * current, > viewed. Click a row to select it. Open changes the main context, while archive, restore, and purge act on the selected space.",
+        )
+        .style(Style::default().fg(MUTED)),
+        hint_area,
+    );
+}
+
+fn render_space_manager_list(frame: &mut Frame, area: Rect, app: &mut TuiApp) {
+    let block = panel_block("Spaces", true);
+    frame.render_widget(block.clone(), area);
+    let inner = block.inner(area);
+    app.set_space_manager_viewport(inner);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
 
     if app.spaces.is_empty() {
         frame.render_widget(
-            Paragraph::new("No spaces yet. Click + New to create your first space.")
-                .style(Style::default().fg(MUTED)),
-            tabs_area,
+            Paragraph::new("No spaces yet. Click + New to create the first one.")
+                .style(Style::default().fg(MUTED))
+                .wrap(Wrap { trim: true }),
+            inner,
         );
         return;
     }
 
-    let mut cursor_x = tabs_area.x;
-    for index in 0..app.spaces.len() {
-        let label = if app.spaces[index].space.state.is_archived() {
-            format!("[a] {}", app.spaces[index].space.name)
-        } else {
-            app.spaces[index].space.name.clone()
-        };
-        let width = (label.len() as u16 + 2).min(tabs_area.right().saturating_sub(cursor_x));
-        if width == 0 {
-            break;
-        }
+    app.ensure_space_manager_selection_visible();
+    let max_offset = app.spaces.len().saturating_sub(inner.height as usize);
+    let offset = app.space_manager_scroll().min(max_offset);
+    if offset != app.space_manager_scroll() {
+        app.set_space_manager_scroll(offset);
+    }
+    let visible_count = inner.height as usize;
 
-        let rect = Rect::new(cursor_x, tabs_area.y, width, 1);
-        let is_active = index == app.space_index;
-        let target = MouseTarget::SwitchSpace(index);
-        render_button(
-            frame,
-            rect,
-            &label,
-            is_active,
-            true,
-            false,
-            app.is_hovered(&target),
-        );
-        app.register_hitbox(rect, target);
-        cursor_x = rect.right().saturating_add(1);
-        if cursor_x >= tabs_area.right() {
+    for row in 0..visible_count {
+        let index = offset + row;
+        let Some(space) = app.spaces.get(index) else {
             break;
-        }
+        };
+
+        let row_rect = Rect::new(inner.x, inner.y + row as u16, inner.width, 1);
+        let selected = index == app.space_index;
+        let target = MouseTarget::SelectManagedSpace(index);
+        let hovered = app.is_hovered(&target);
+        let row_style = if selected {
+            Style::default().bg(SUBTLE_BG).fg(TEXT)
+        } else if hovered {
+            Style::default().bg(HOVER_BG).fg(TEXT)
+        } else {
+            Style::default().bg(PANEL_BG).fg(TEXT)
+        };
+
+        let current_marker = if app.current_active_space().map(|current| &current.space.id)
+            == Some(&space.space.id)
+        {
+            "*"
+        } else {
+            " "
+        };
+        let viewed_marker =
+            if app.current_space().map(|viewed| &viewed.space.id) == Some(&space.space.id) {
+                ">"
+            } else {
+                " "
+            };
+        let status = if space.space.state.is_archived() {
+            "archived"
+        } else {
+            "active"
+        };
+        let counts = format!(
+            "{}/{}",
+            space.counts.todo_tasks, space.counts.archived_tasks
+        );
+        let line = format!(
+            "{}{} {:<16.16} [{:<8}] {:>5}",
+            current_marker, viewed_marker, space.space.name, status, counts
+        );
+
+        frame.render_widget(Paragraph::new(line).style(row_style), row_rect);
+        app.register_hitbox(row_rect, target);
+    }
+}
+
+fn render_space_manager_summary(frame: &mut Frame, area: Rect, app: &mut TuiApp) {
+    let block = panel_block("Selection", true);
+    frame.render_widget(block.clone(), area);
+    let inner = block.inner(area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let text = if let Some(space) = app.selected_space_summary() {
+        let role = match (
+            app.current_active_space().map(|current| &current.space.id) == Some(&space.space.id),
+            app.current_space().map(|viewed| &viewed.space.id) == Some(&space.space.id),
+        ) {
+            (true, true) => "current + viewed",
+            (true, false) => "current",
+            (false, true) => "viewed",
+            (false, false) => "listed",
+        };
+
+        Text::from(vec![
+            kv_line("Name", &space.space.name),
+            kv_line("Slug", &space.space.slug),
+            kv_line(
+                "State",
+                if space.space.state.is_archived() {
+                    "archived"
+                } else {
+                    "active"
+                },
+            ),
+            kv_line("Role", role),
+            kv_line(
+                "Tasks",
+                &format!(
+                    "{} active / {} archived",
+                    space.counts.todo_tasks, space.counts.archived_tasks
+                ),
+            ),
+            Line::from(""),
+            Line::from(Span::styled(
+                "How it works",
+                Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+            )),
+            Line::from("- Open switches the main working context to the selected space."),
+            Line::from("- Archived spaces stay browseable but remain read-only until restored."),
+            Line::from("- Purge permanently removes the whole space after confirmation."),
+        ])
+    } else {
+        Text::from(vec![
+            Line::from(Span::styled(
+                "Select a space to inspect it.",
+                Style::default().fg(MUTED),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Use Active or All to change which spaces appear in this manager.",
+                Style::default().fg(MUTED),
+            )),
+        ])
+    };
+
+    frame.render_widget(
+        Paragraph::new(text)
+            .style(Style::default().fg(TEXT))
+            .wrap(Wrap { trim: false }),
+        inner,
+    );
+}
+
+fn space_manager_context_text(app: &TuiApp) -> String {
+    match (app.current_space(), app.current_active_space()) {
+        (Some(viewed), Some(current)) if viewed.space.id != current.space.id => format!(
+            "Viewed: {} [{}] | Current: {}",
+            viewed.space.name,
+            if viewed.space.state.is_archived() {
+                "archived"
+            } else {
+                "active"
+            },
+            current.space.name,
+        ),
+        (Some(viewed), _) => format!(
+            "Viewed: {} [{}]",
+            viewed.space.name,
+            if viewed.space.state.is_archived() {
+                "archived"
+            } else {
+                "active"
+            },
+        ),
+        (None, Some(current)) => format!("Current: {}", current.space.name),
+        (None, None) => "No space selected yet.".to_owned(),
     }
 }
 
 fn render_wide_body(frame: &mut Frame, area: Rect, app: &mut TuiApp) {
-    let layout = Layout::horizontal([Constraint::Percentage(46), Constraint::Percentage(54)]);
-    let [tree_area, details_area] = area.layout(&layout);
-    render_task_tree(frame, tree_area, app);
-    render_details(
+    let block = shell_block();
+    frame.render_widget(block.clone(), area);
+    let inner = block.inner(area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let detail_height = detail_panel_height(inner.height);
+    let layout = Layout::vertical([
+        Constraint::Min(inner.height.saturating_sub(detail_height)),
+        Constraint::Length(0),
+        Constraint::Length(detail_height),
+    ]);
+    let [top_area, _, detail_area] = inner.layout(&layout);
+    let row_layout = Layout::horizontal([
+        Constraint::Fill(5),
+        Constraint::Length(1),
+        Constraint::Fill(3),
+    ]);
+    let [todo_area, _, inspector_area] = top_area.layout(&row_layout);
+
+    render_task_tree(frame, todo_area, app);
+    render_inspector(
         frame,
-        details_area,
+        inspector_area,
+        app,
+        app.focus_area == FocusArea::Details,
+        false,
+    );
+    render_detail_panel(
+        frame,
+        detail_area,
         app,
         app.focus_area == FocusArea::Details,
     );
 }
 
 fn render_narrow_body(frame: &mut Frame, area: Rect, app: &mut TuiApp) {
-    render_task_tree(frame, area, app);
+    let block = shell_block();
+    frame.render_widget(block.clone(), area);
+    let inner = block.inner(area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    render_task_tree(frame, inner, app);
     if app.focus_area == FocusArea::Details {
-        let overlay = centered_rect(area, 94, 84);
+        let overlay = centered_rect(inner, 96, 90);
         frame.render_widget(Clear, overlay);
-        render_details(frame, overlay, app, true);
+        let shell = shell_block();
+        frame.render_widget(shell.clone(), overlay);
+        let overlay_inner = shell.inner(overlay);
+        if overlay_inner.width == 0 || overlay_inner.height == 0 {
+            return;
+        }
+        let detail_height = detail_panel_height(overlay_inner.height);
+        let layout = Layout::vertical([
+            Constraint::Min(overlay_inner.height.saturating_sub(detail_height)),
+            Constraint::Length(0),
+            Constraint::Length(detail_height),
+        ]);
+        let [inspector_area, _, detail_area] = overlay_inner.layout(&layout);
+        render_inspector(frame, inspector_area, app, true, true);
+        render_detail_panel(frame, detail_area, app, true);
     }
 }
 
 fn render_task_tree(frame: &mut Frame, area: Rect, app: &mut TuiApp) {
-    let block = panel_block("Task Tree", app.focus_area == FocusArea::TaskTree);
+    let block = panel_block("TODO", app.focus_area == FocusArea::TaskTree);
     frame.render_widget(block.clone(), area);
     let inner = block.inner(area);
     app.set_task_tree_viewport(inner);
@@ -421,19 +626,31 @@ fn render_task_tree(frame: &mut Frame, area: Rect, app: &mut TuiApp) {
     }
 }
 
-fn render_details(frame: &mut Frame, area: Rect, app: &mut TuiApp, focused: bool) {
-    let block = panel_block("Details", focused);
+fn render_inspector(frame: &mut Frame, area: Rect, app: &mut TuiApp, focused: bool, narrow: bool) {
+    let block = panel_block("Inspector", focused);
     frame.render_widget(block.clone(), area);
     let inner = block.inner(area);
     if inner.width == 0 || inner.height == 0 {
         return;
     }
 
-    let layout = Layout::vertical([Constraint::Length(4), Constraint::Fill(1)]);
-    let [toolbar_area, content_area] = inner.layout(&layout);
-    render_details_toolbar(frame, toolbar_area, app, area.width < 100);
-    app.set_details_viewport(content_area);
+    let content = inner;
+    if content.width == 0 || content.height < 7 {
+        return;
+    }
 
+    render_details_toolbar(frame, content, app, narrow);
+}
+
+fn render_detail_panel(frame: &mut Frame, area: Rect, app: &mut TuiApp, focused: bool) {
+    let block = panel_block("Detail", focused);
+    frame.render_widget(block.clone(), area);
+    let inner = block.inner(area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    app.set_details_viewport(inner);
     let text = if let Some(details) = app.details.as_ref() {
         let logs = if details.logs.is_empty() {
             vec![Line::from(Span::styled("-", Style::default().fg(MUTED)))]
@@ -450,43 +667,28 @@ fn render_details(frame: &mut Frame, area: Rect, app: &mut TuiApp, focused: bool
                 })
                 .collect::<Vec<_>>()
         };
+        let description = details
+            .task
+            .description
+            .clone()
+            .unwrap_or_else(|| "-".to_owned());
 
         let mut lines = vec![
             kv_line("Title", &details.task.title),
-            Line::from(vec![
-                Span::styled("Status: ", Style::default().fg(MUTED)),
-                Span::styled(
-                    status_label(details.task.status),
-                    Style::default().fg(status_color(details.task.status)),
-                ),
-            ]),
-            kv_line("Space", &details.space.slug),
-            kv_line(
-                "Parent",
-                &details
-                    .parent
-                    .as_ref()
-                    .map(|task| task.title.clone())
-                    .unwrap_or_else(|| "-".to_owned()),
-            ),
             Line::from(""),
             Line::from(Span::styled(
                 "Description",
                 Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
             )),
-            Line::from(
-                details
-                    .task
-                    .description
-                    .clone()
-                    .unwrap_or_else(|| "-".to_owned()),
-            ),
+        ];
+        lines.extend(description.lines().map(|line| Line::from(line.to_owned())));
+        lines.extend([
             Line::from(""),
             Line::from(Span::styled(
                 "Recent Logs",
                 Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
             )),
-        ];
+        ]);
         lines.extend(logs);
         Text::from(lines)
     } else {
@@ -519,116 +721,170 @@ fn render_details(frame: &mut Frame, area: Rect, app: &mut TuiApp, focused: bool
             .scroll((app.details_scroll.min(10_000) as u16, 0))
             .style(Style::default().fg(TEXT))
             .wrap(Wrap { trim: false }),
-        content_area,
+        inner,
     );
 }
 
 fn render_details_toolbar(frame: &mut Frame, area: Rect, app: &mut TuiApp, narrow: bool) {
-    let selected = app.details.as_ref().map(|details| details.task.status);
+    let selected = app.details.as_ref().map(|details| &details.task);
+    let selected_status = selected.map(|task| task.status);
+    let selected_archived = selected.is_some_and(|task| task.archived);
     let can_mutate = app.can_mutate_viewed_space();
     let can_create = app.current_space().is_some() && can_mutate;
-    let can_act = selected.is_some() && can_mutate;
-    let can_restore = matches!(selected, Some(TaskStatus::Archived)) && can_mutate;
-    let can_archive = matches!(
-        selected,
-        Some(TaskStatus::Todo | TaskStatus::InProgress | TaskStatus::Done)
-    ) && can_mutate;
-    let can_purge = matches!(selected, Some(TaskStatus::Archived)) && can_mutate;
-    let can_status =
-        selected.is_some() && !matches!(selected, Some(TaskStatus::Archived)) && can_mutate;
-    let can_reorder = can_act && app.current_sort == crate::domain::SortMode::Manual;
+    let can_edit_task = selected.is_some() && can_mutate && !selected_archived;
+    let can_restore = selected_archived && can_mutate;
+    let can_purge = selected_archived && can_mutate;
+    let can_status = selected.is_some() && can_mutate && !selected_archived;
+    let can_reorder = can_edit_task && app.current_sort == crate::domain::SortMode::Manual;
 
     let rows = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
     ]);
-    let [top_row, middle_row, bottom_row] = area.layout(&rows);
+    let [
+        actions_header,
+        actions_row_one,
+        actions_row_two,
+        workflow_header,
+        workflow_row_one,
+        workflow_row_two,
+        arrange_header,
+        arrange_row,
+        _,
+    ] = area.layout(&rows);
+
+    render_section_rule(frame, actions_header, "Actions");
     if narrow {
-        render_inline_buttons(
+        render_link_buttons(
             frame,
             app,
-            top_row,
+            actions_row_one,
             &[
                 ("Back", MouseTarget::CloseDetails, false, true, false),
                 ("+ Task", MouseTarget::CreateTask, false, can_create, false),
+            ],
+        );
+        render_link_buttons(
+            frame,
+            app,
+            actions_row_two,
+            &[
                 (
                     "+ Subtask",
                     MouseTarget::CreateSubtask,
                     false,
-                    can_act,
+                    can_edit_task,
                     false,
                 ),
-                ("Edit", MouseTarget::EditTask, false, can_act, false),
-                ("Log", MouseTarget::AddLog, false, can_act, false),
+                ("Edit", MouseTarget::EditTask, false, can_edit_task, false),
+                ("Log", MouseTarget::AddLog, false, can_edit_task, false),
             ],
         );
     } else {
-        render_inline_buttons(
+        render_link_buttons(
             frame,
             app,
-            top_row,
+            actions_row_one,
             &[
                 ("+ Task", MouseTarget::CreateTask, false, can_create, false),
                 (
                     "+ Subtask",
                     MouseTarget::CreateSubtask,
                     false,
-                    can_act,
+                    can_edit_task,
                     false,
                 ),
-                ("Edit", MouseTarget::EditTask, false, can_act, false),
-                ("Log", MouseTarget::AddLog, false, can_act, false),
+            ],
+        );
+        render_link_buttons(
+            frame,
+            app,
+            actions_row_two,
+            &[
+                ("Edit", MouseTarget::EditTask, false, can_edit_task, false),
+                ("Log", MouseTarget::AddLog, false, can_edit_task, false),
             ],
         );
     }
-    render_inline_buttons(
+
+    render_section_rule(frame, workflow_header, "Workflow");
+    if selected_archived {
+        render_link_buttons(
+            frame,
+            app,
+            workflow_row_one,
+            &[
+                (
+                    "Restore",
+                    MouseTarget::RestoreTask,
+                    false,
+                    can_restore,
+                    false,
+                ),
+                ("Purge", MouseTarget::OpenPurgeTask, false, can_purge, true),
+            ],
+        );
+        frame.render_widget(
+            Paragraph::new("").style(Style::default().bg(PANEL_BG)),
+            workflow_row_two,
+        );
+    } else {
+        render_link_buttons(
+            frame,
+            app,
+            workflow_row_one,
+            &[
+                (
+                    "Todo",
+                    MouseTarget::SetTaskStatus(TaskStatus::Todo),
+                    matches!(selected_status, Some(TaskStatus::Todo)),
+                    can_status,
+                    false,
+                ),
+                (
+                    "Doing",
+                    MouseTarget::SetTaskStatus(TaskStatus::InProgress),
+                    matches!(selected_status, Some(TaskStatus::InProgress)),
+                    can_status,
+                    false,
+                ),
+            ],
+        );
+        render_link_buttons(
+            frame,
+            app,
+            workflow_row_two,
+            &[
+                (
+                    "Done",
+                    MouseTarget::SetTaskStatus(TaskStatus::Done),
+                    matches!(selected_status, Some(TaskStatus::Done)),
+                    can_status,
+                    false,
+                ),
+                (
+                    "Close",
+                    MouseTarget::SetTaskStatus(TaskStatus::Close),
+                    matches!(selected_status, Some(TaskStatus::Close)),
+                    can_status,
+                    false,
+                ),
+            ],
+        );
+    }
+
+    render_section_rule(frame, arrange_header, "Arrange");
+    render_link_buttons(
         frame,
         app,
-        middle_row,
-        &[
-            (
-                "Todo",
-                MouseTarget::SetTaskStatus(TaskStatus::Todo),
-                matches!(selected, Some(TaskStatus::Todo)),
-                can_status,
-                false,
-            ),
-            (
-                "Doing",
-                MouseTarget::SetTaskStatus(TaskStatus::InProgress),
-                matches!(selected, Some(TaskStatus::InProgress)),
-                can_status,
-                false,
-            ),
-            (
-                "Done",
-                MouseTarget::SetTaskStatus(TaskStatus::Done),
-                matches!(selected, Some(TaskStatus::Done)),
-                can_status,
-                false,
-            ),
-            (
-                "Archive",
-                MouseTarget::ArchiveTask,
-                false,
-                can_archive,
-                false,
-            ),
-            (
-                "Restore",
-                MouseTarget::RestoreTask,
-                false,
-                can_restore,
-                false,
-            ),
-            ("Purge", MouseTarget::OpenPurgeTask, false, can_purge, true),
-        ],
-    );
-    render_inline_buttons(
-        frame,
-        app,
-        bottom_row,
+        arrange_row,
         &[
             (
                 "Move Up",
@@ -649,26 +905,62 @@ fn render_details_toolbar(frame: &mut Frame, area: Rect, app: &mut TuiApp, narro
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &mut TuiApp) {
-    let layout = Layout::horizontal([Constraint::Fill(1), Constraint::Length(8)]);
-    let [text_area, help_area] = area.layout(&layout);
+    let footer_text = app
+        .status_message
+        .clone()
+        .unwrap_or_else(|| app.help_text());
+    let prefix = "└─ ";
+    let help_label = "[Help]";
+    let prefix_width = prefix.chars().count();
+    let help_width = help_label.chars().count();
+    let reserved_width = prefix_width + 1 + help_width + 2;
+    let body_width = area.width as usize;
+    let message = truncate_text(&footer_text, body_width.saturating_sub(reserved_width));
+    let message_width = message.chars().count();
+    let tail_width = body_width.saturating_sub(prefix_width + message_width + 1 + help_width);
+    let tail = match tail_width {
+        0 => String::new(),
+        1 => "┘".to_owned(),
+        _ => format!(" {}┘", "─".repeat(tail_width - 2)),
+    };
+    let help_target = MouseTarget::OpenHelp;
+    let help_style = if matches!(&app.mode, Mode::Help) {
+        Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+    } else if app.is_hovered(&help_target) {
+        Style::default().fg(TEXT).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(MUTED)
+    };
+    let message_style = if app.status_message.is_some() {
+        Style::default().fg(TEXT)
+    } else {
+        Style::default().fg(MUTED)
+    };
+
     frame.render_widget(
-        Paragraph::new(app.help_text())
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(MUTED).bg(PANEL_BG)),
-        text_area,
+        Paragraph::new(Line::from(vec![
+            Span::styled(prefix, Style::default().fg(BORDER)),
+            Span::styled(message.clone(), message_style),
+            Span::raw(" "),
+            Span::styled(help_label, help_style),
+            Span::styled(tail, Style::default().fg(BORDER)),
+        ]))
+        .style(Style::default().bg(PANEL_BG)),
+        area,
     );
 
-    let help_target = MouseTarget::OpenHelp;
-    render_button(
-        frame,
-        help_area,
-        "Help",
-        matches!(&app.mode, Mode::Help),
-        true,
-        false,
-        app.is_hovered(&help_target),
-    );
-    app.register_hitbox(help_area, help_target);
+    let help_x = area.x + (prefix_width + message_width + 1) as u16;
+    if help_x < area.right() {
+        app.register_hitbox(
+            Rect::new(
+                help_x,
+                area.y,
+                help_width.min(area.width as usize) as u16,
+                1,
+            ),
+            help_target,
+        );
+    }
 }
 
 fn render_space_form(
@@ -705,7 +997,7 @@ fn render_space_form(
         ],
     );
     frame.render_widget(
-        Paragraph::new("Type in the field, then click Save or Cancel. Ctrl+C quits the app.")
+        Paragraph::new("Type in the field, then click Save or Cancel. Esc closes this dialog. Ctrl+C quits the app.")
             .style(Style::default().fg(MUTED)),
         hint_area,
     );
@@ -775,7 +1067,7 @@ fn render_task_form(
         ],
     );
     frame.render_widget(
-        Paragraph::new("Click fields to edit, click a status chip, then click Save or Cancel. Ctrl+C quits the app.")
+        Paragraph::new("Click fields to edit, click a status chip, then click Save or Cancel. Esc closes this dialog. Ctrl+C quits the app.")
             .style(Style::default().fg(MUTED)),
         hint_area,
     );
@@ -820,7 +1112,7 @@ fn render_log_form(
         ],
     );
     frame.render_widget(
-        Paragraph::new("Type in the message box, then click Save or Cancel. Ctrl+C quits the app.")
+        Paragraph::new("Type in the message box, then click Save or Cancel. Esc closes this dialog. Ctrl+C quits the app.")
             .style(Style::default().fg(MUTED)),
         hint_area,
     );
@@ -882,7 +1174,7 @@ fn render_purge_confirm(
         ],
     );
     frame.render_widget(
-        Paragraph::new("Click Cancel or Purge. Ctrl+C quits the app.")
+        Paragraph::new("Click Cancel or Purge. Esc closes this dialog. Ctrl+C quits the app.")
             .style(Style::default().fg(MUTED)),
         hint_area,
     );
@@ -934,7 +1226,7 @@ fn render_space_purge_confirm(
         ],
     );
     frame.render_widget(
-        Paragraph::new("Click Cancel or Purge. Ctrl+C quits the app.")
+        Paragraph::new("Click Cancel or Purge. Esc closes this dialog. Ctrl+C quits the app.")
             .style(Style::default().fg(MUTED)),
         hint_area,
     );
@@ -973,7 +1265,7 @@ fn render_filter_form(
     );
     frame.render_widget(
         Paragraph::new(
-            "Matches task title, description, logs, and ids. Click Apply, Clear, or Cancel.",
+            "Matches task title, description, logs, and ids. Click Apply, Clear, or Cancel. Esc closes this dialog.",
         )
         .style(Style::default().fg(MUTED)),
         hint_area,
@@ -996,10 +1288,11 @@ fn render_help_overlay(frame: &mut Frame, area: Rect, app: &mut TuiApp) {
             "Mouse-first workflow",
             Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
         )),
-        Line::from("- Click spaces to switch context; archived spaces appear in All mode."),
+        Line::from("- Click the Space button in the top bar to open the manager popup."),
         Line::from(
             "- Click Filter to narrow the current task tree by title, description, logs, or ids.",
         ),
+        Line::from("- Open from the manager switches context; archived spaces appear in All mode."),
         Line::from("- Use manual sort plus Move Up/Move Down for sibling reordering."),
         Line::from("- Archived spaces are read-only until restored."),
         Line::from("- Purge always requires typing `purge` in a confirm dialog."),
@@ -1059,6 +1352,13 @@ fn render_status_picker(frame: &mut Frame, area: Rect, app: &mut TuiApp, status:
                 true,
                 false,
             ),
+            (
+                "Close",
+                MouseTarget::TaskFormStatus(TaskStatus::Close),
+                status == TaskStatus::Close,
+                true,
+                false,
+            ),
         ],
     );
 }
@@ -1092,6 +1392,85 @@ fn render_button_row(
         }
         x = rect.right().saturating_add(2);
     }
+}
+
+fn render_link_buttons(
+    frame: &mut Frame,
+    app: &mut TuiApp,
+    area: Rect,
+    buttons: &[(&str, MouseTarget, bool, bool, bool)],
+) {
+    let mut spans = Vec::new();
+    let mut x = area.x;
+
+    for (index, (label, target, selected, enabled, danger)) in buttons
+        .iter()
+        .map(|(a, b, c, d, e)| (*a, b.clone(), *c, *d, *e))
+        .enumerate()
+    {
+        if index > 0 {
+            spans.push(Span::raw(" "));
+            x = x.saturating_add(1);
+        }
+
+        let token = format!("[{label}]");
+        let width = token.chars().count() as u16;
+        if width == 0 || x.saturating_add(width) > area.right() {
+            break;
+        }
+
+        let style = if !enabled {
+            Style::default().fg(MUTED)
+        } else if danger {
+            Style::default().fg(DANGER).add_modifier(Modifier::BOLD)
+        } else if selected {
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+        } else if app.is_hovered(&target) {
+            Style::default().fg(TEXT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(MUTED)
+        };
+
+        spans.push(Span::styled(token, style));
+        if enabled {
+            app.register_hitbox(
+                Rect::new(x, area.y, width.min(area.right().saturating_sub(x)), 1),
+                target,
+            );
+        }
+        x = x.saturating_add(width);
+    }
+
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(PANEL_BG)),
+        area,
+    );
+}
+
+fn render_section_rule(frame: &mut Frame, area: Rect, title: &str) {
+    let title_text = format!(" {title} ");
+    let title_width = title_text.chars().count();
+    let total_width = area.width as usize;
+    if total_width == 0 {
+        return;
+    }
+
+    let remaining = total_width.saturating_sub(title_width);
+    let left = remaining / 2;
+    let right = remaining.saturating_sub(left);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("─".repeat(left), Style::default().fg(BORDER)),
+            Span::styled(
+                title_text,
+                Style::default().fg(MUTED).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("─".repeat(right), Style::default().fg(BORDER)),
+        ]))
+        .style(Style::default().bg(PANEL_BG)),
+        area,
+    );
 }
 
 fn render_inline_buttons(
@@ -1217,6 +1596,37 @@ fn set_text_area_cursor(frame: &mut Frame, area: Rect, input: &crate::tui::input
     ));
 }
 
+fn shell_block<'a>() -> Block<'a> {
+    Block::bordered()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(BORDER))
+        .style(Style::default().bg(PANEL_BG).fg(TEXT))
+}
+
+fn detail_panel_height(total_height: u16) -> u16 {
+    if total_height >= 26 {
+        11
+    } else if total_height >= 21 {
+        9
+    } else if total_height >= 17 {
+        7
+    } else {
+        total_height.saturating_sub(5).max(5)
+    }
+}
+
+fn truncate_text(value: &str, max_width: usize) -> String {
+    if value.chars().count() <= max_width {
+        return value.to_owned();
+    }
+    if max_width <= 3 {
+        return value.chars().take(max_width).collect();
+    }
+    let mut shortened = value.chars().take(max_width - 3).collect::<String>();
+    shortened.push_str("...");
+    shortened
+}
+
 fn panel_block<'a>(title: &'a str, focused: bool) -> Block<'a> {
     Block::bordered()
         .title(title)
@@ -1245,16 +1655,7 @@ fn status_marker(status: TaskStatus) -> &'static str {
         TaskStatus::Todo => "[ ]",
         TaskStatus::InProgress => "[~]",
         TaskStatus::Done => "[x]",
-        TaskStatus::Archived => "[a]",
-    }
-}
-
-fn status_label(status: TaskStatus) -> &'static str {
-    match status {
-        TaskStatus::Todo => "todo",
-        TaskStatus::InProgress => "in_progress",
-        TaskStatus::Done => "done",
-        TaskStatus::Archived => "archived",
+        TaskStatus::Close => "[c]",
     }
 }
 
@@ -1263,7 +1664,7 @@ fn status_color(status: TaskStatus) -> Color {
         TaskStatus::Todo => TEXT,
         TaskStatus::InProgress => Color::Yellow,
         TaskStatus::Done => Color::Green,
-        TaskStatus::Archived => MUTED,
+        TaskStatus::Close => Color::Cyan,
     }
 }
 
@@ -1276,30 +1677,10 @@ fn sort_label(sort: crate::domain::SortMode) -> &'static str {
     }
 }
 
-fn active_area_label(area: FocusArea) -> &'static str {
-    match area {
-        FocusArea::Spaces => "spaces",
-        FocusArea::TaskTree => "task-tree",
-        FocusArea::Details => "details",
-    }
-}
-
 fn format_timestamp(value: time::OffsetDateTime) -> String {
     value
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| value.to_string())
-}
-
-fn allocate_right_button(right_edge: &mut u16, y: u16, label: &str) -> Rect {
-    let width = label.len() as u16 + 2;
-    let x = right_edge.saturating_sub(width);
-    let rect = Rect::new(x, y, width.max(1), 1);
-    *right_edge = x.saturating_sub(1);
-    rect
-}
-
-fn button_rect(x: u16, y: u16, width: u16, height: u16) -> Rect {
-    Rect::new(x, y, width.max(1), height.max(1))
 }
 
 fn centered_rect(area: Rect, width_pct: u16, height_pct: u16) -> Rect {

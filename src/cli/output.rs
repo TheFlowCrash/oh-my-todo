@@ -53,12 +53,14 @@ pub fn format_updated_task(task: &Task) -> String {
 }
 
 pub fn format_task_status(task: &Task) -> String {
+    let archived_suffix = if task.archived { " and archived" } else { "" };
     format!(
-        "Set task [{}] {} ({}) to {}",
+        "Set task [{}] {} ({}) to {}{}",
         task.id.short_id(),
         task.title,
         task.id,
-        format_task_status_name(task.status)
+        format_task_status_name(task.status),
+        archived_suffix,
     )
 }
 
@@ -83,7 +85,7 @@ pub fn format_archived_task(task: &Task, affected_count: usize) -> String {
 
 pub fn format_restored_task(task: &Task, affected_count: usize) -> String {
     format!(
-        "Restored task [{}] {} ({}) as {} across {} task(s)",
+        "Restored task [{}] {} ({}) with status {} across {} task(s)",
         task.id.short_id(),
         task.title,
         task.id,
@@ -256,6 +258,7 @@ pub fn render_task(details: &TaskDetails) -> String {
             details.space.slug
         ),
         format!("Status: {}", format_task_status_name(details.task.status)),
+        format!("Archived: {}", yes_no(details.task.archived)),
         format!("Parent: {}", parent),
         format!("Children: {}", children),
         format!("Created: {}", format_timestamp(details.task.created_at)),
@@ -285,7 +288,7 @@ pub fn format_task_status_name(status: TaskStatus) -> &'static str {
         TaskStatus::Todo => "todo",
         TaskStatus::InProgress => "in_progress",
         TaskStatus::Done => "done",
-        TaskStatus::Archived => "archived",
+        TaskStatus::Close => "close",
     }
 }
 
@@ -311,7 +314,7 @@ fn status_marker(status: TaskStatus) -> &'static str {
         TaskStatus::Todo => "[ ]",
         TaskStatus::InProgress => "[~]",
         TaskStatus::Done => "[x]",
-        TaskStatus::Archived => "[a]",
+        TaskStatus::Close => "[c]",
     }
 }
 
@@ -344,11 +347,11 @@ fn format_doctor_issue(issue: &DoctorIssue) -> String {
         DoctorIssue::BucketStatusMismatch {
             task_id,
             bucket,
-            status,
+            archived,
         } => format!(
-            "task {task_id} is stored in {} but has status {}",
+            "task {task_id} is stored in {} but archived is {}",
             format_bucket(*bucket),
-            format_task_status_name(*status)
+            yes_no(*archived)
         ),
     }
 }

@@ -1,6 +1,5 @@
 use crate::domain::{
-    PendingOperationKind, SortMode, Space, SpaceCounts, SpaceId, Task, TaskId, TaskLog, TaskStatus,
-    ViewMode,
+    PendingOperationKind, SortMode, Space, SpaceCounts, SpaceId, Task, TaskId, TaskLog, ViewMode,
 };
 use crate::storage::TaskBucket;
 
@@ -99,6 +98,6 @@ pub enum DoctorIssue {
     BucketStatusMismatch {
         task_id: TaskId,
         bucket: TaskBucket,
-        status: TaskStatus,
+        archived: bool,
     },
 }

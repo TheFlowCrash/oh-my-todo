@@ -1,7 +1,7 @@
 use oh_my_todo::application::bootstrap::{BootstrapOptions, bootstrap};
 use oh_my_todo::application::commands::{
     ArchiveSpaceCommand, ArchiveTaskCommand, CreateSpaceCommand, CreateTaskCommand,
-    RestoreTaskCommand, SetCurrentSpaceCommand,
+    RestoreTaskCommand, SetCurrentSpaceCommand, UpdateTaskStatusCommand,
 };
 use oh_my_todo::application::error::AppError;
 use oh_my_todo::domain::{
@@ -13,7 +13,7 @@ use tempfile::tempdir;
 use time::OffsetDateTime;
 
 #[test]
-fn restore_applies_status_to_whole_subtree_and_blocks_archived_child_restore() {
+fn restore_clears_archived_flag_and_blocks_archived_child_restore() {
     let temp_dir = tempdir().unwrap();
     let context = bootstrap(BootstrapOptions {
         data_root: Some(temp_dir.path().join("app_data")),
@@ -65,7 +65,6 @@ fn restore_applies_status_to_whole_subtree_and_blocks_archived_child_restore() {
         .task_service
         .restore_task(RestoreTaskCommand {
             task_ref: child.id.as_str().to_owned(),
-            status: TaskStatus::Todo,
         })
         .unwrap_err();
     assert!(matches!(
@@ -77,14 +76,94 @@ fn restore_applies_status_to_whole_subtree_and_blocks_archived_child_restore() {
         .task_service
         .restore_task(RestoreTaskCommand {
             task_ref: parent.id.as_str().to_owned(),
-            status: TaskStatus::InProgress,
         })
         .unwrap();
 
     let reloaded_parent = context.task_service.load_task(&parent.id).unwrap();
     let reloaded_child = context.task_service.load_task(&child.id).unwrap();
-    assert_eq!(reloaded_parent.status, TaskStatus::InProgress);
-    assert_eq!(reloaded_child.status, TaskStatus::InProgress);
+    assert_eq!(reloaded_parent.status, TaskStatus::Todo);
+    assert_eq!(reloaded_child.status, TaskStatus::Todo);
+    assert!(!reloaded_parent.archived);
+    assert!(!reloaded_child.archived);
+}
+
+#[test]
+fn done_or_close_requires_finished_subtasks() {
+    let temp_dir = tempdir().unwrap();
+    let context = bootstrap(BootstrapOptions {
+        data_root: Some(temp_dir.path().join("app_data")),
+    })
+    .unwrap();
+
+    let personal = context
+        .space_service
+        .create_space(CreateSpaceCommand {
+            name: "Personal".to_owned(),
+        })
+        .unwrap();
+    context
+        .space_service
+        .use_space(SetCurrentSpaceCommand {
+            space_ref: personal.slug.clone(),
+        })
+        .unwrap();
+
+    let parent = context
+        .task_service
+        .create_task(CreateTaskCommand {
+            title: "Parent".to_owned(),
+            space_ref: None,
+            description: None,
+            parent_ref: None,
+            status: TaskStatus::Todo,
+        })
+        .unwrap();
+    let child = context
+        .task_service
+        .create_task(CreateTaskCommand {
+            title: "Child".to_owned(),
+            space_ref: None,
+            description: None,
+            parent_ref: Some(parent.id.as_str().to_owned()),
+            status: TaskStatus::Todo,
+        })
+        .unwrap();
+
+    let error = context
+        .task_service
+        .set_task_status(UpdateTaskStatusCommand {
+            task_ref: parent.id.as_str().to_owned(),
+            status: TaskStatus::Done,
+        })
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        AppError::TaskCompletionBlockedByUnfinishedChild { .. }
+    ));
+
+    let finished_child = context
+        .task_service
+        .set_task_status(UpdateTaskStatusCommand {
+            task_ref: child.id.as_str().to_owned(),
+            status: TaskStatus::Done,
+        })
+        .unwrap();
+    assert_eq!(finished_child.status, TaskStatus::Done);
+    assert!(finished_child.archived);
+
+    let closed_parent = context
+        .task_service
+        .set_task_status(UpdateTaskStatusCommand {
+            task_ref: parent.id.as_str().to_owned(),
+            status: TaskStatus::Close,
+        })
+        .unwrap();
+    let reloaded_child = context.task_service.load_task(&child.id).unwrap();
+
+    assert_eq!(closed_parent.status, TaskStatus::Close);
+    assert!(closed_parent.archived);
+    assert_eq!(reloaded_child.status, TaskStatus::Done);
+    assert!(reloaded_child.archived);
 }
 
 #[test]
@@ -134,7 +213,8 @@ fn space_archive_switches_current_space_and_bootstrap_recovers_pending_operation
 
     let mut task = Task::new("Run 5km", work.id.clone(), 0);
     repository.save_task(&task).unwrap();
-    task.status = TaskStatus::Archived;
+    task.status = TaskStatus::Close;
+    task.archived = true;
     task.touch(OffsetDateTime::now_utc());
 
     let mut app_state = repository.load_state().unwrap();
@@ -153,7 +233,8 @@ fn space_archive_switches_current_space_and_bootstrap_recovers_pending_operation
     let recovered_task = recovered.task_service.load_task(&task.id).unwrap();
     let recovered_state = recovered.space_service.load_app_state().unwrap();
 
-    assert_eq!(recovered_task.status, TaskStatus::Archived);
+    assert_eq!(recovered_task.status, TaskStatus::Close);
+    assert!(recovered_task.archived);
     assert!(
         data_root
             .join("spaces")
@@ -189,7 +270,8 @@ fn doctor_reports_missing_parent_and_bucket_status_mismatch() {
     repository.save_task(&orphan).unwrap();
 
     let mut mismatched = Task::new("Mismatched", space.id.clone(), 1);
-    mismatched.status = TaskStatus::Archived;
+    mismatched.status = TaskStatus::Close;
+    mismatched.archived = true;
     write_ron_file(
         &DataPaths::from_root(data_root)
             .space_todo_dir(&space.id)

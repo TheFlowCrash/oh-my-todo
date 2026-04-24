@@ -34,7 +34,6 @@ impl TaskService {
 
     pub fn create_task(&self, command: CreateTaskCommand) -> Result<Task, AppError> {
         ensure_non_empty_title(&command.title)?;
-        ensure_active_status(command.status)?;
 
         let all_tasks = self.repository.list_all_tasks()?;
         let parent_task = if let Some(parent_ref) = command.parent_ref.as_deref() {
@@ -77,6 +76,7 @@ impl TaskService {
         task.description = command.description;
         task.parent_id = parent_task.as_ref().map(|task| task.id.clone());
         task.status = command.status;
+        task.archived = task.status.is_finished();
 
         self.repository.save_task(&task)?;
         Ok(task)
@@ -134,10 +134,6 @@ impl TaskService {
 
         if let Some(title) = command.title.as_deref() {
             ensure_non_empty_title(title)?;
-        }
-
-        if let Some(status) = command.status {
-            ensure_active_status(status)?;
         }
 
         let all_tasks = self.repository.list_all_tasks()?;
@@ -221,37 +217,56 @@ impl TaskService {
             }
         }
 
-        let root = updated_tasks
-            .iter_mut()
-            .find(|task| task.id == current_task.id)
+        let root_index = updated_tasks
+            .iter()
+            .position(|task| task.id == current_task.id)
             .expect("edited task must be present in subtree");
 
         if let Some(title) = command.title {
-            root.title = title;
+            updated_tasks[root_index].title = title;
         }
         if let Some(description) = command.description {
-            root.description = Some(description);
+            updated_tasks[root_index].description = Some(description);
         }
         if command.clear_description {
-            root.description = None;
+            updated_tasks[root_index].description = None;
         }
         if let Some(status) = command.status {
-            root.status = status;
+            updated_tasks[root_index].status = status;
+            if status.is_finished() {
+                updated_tasks[root_index].archived = true;
+            }
         }
         if parent_change_requested {
-            root.parent_id = desired_parent.as_ref().map(|task| task.id.clone());
+            updated_tasks[root_index].parent_id =
+                desired_parent.as_ref().map(|task| task.id.clone());
         }
         if parent_changed || space_changed {
-            root.sort_order = next_sort_order(
+            updated_tasks[root_index].sort_order = next_sort_order(
                 &all_tasks,
                 &desired_space.id,
                 desired_parent.as_ref().map(|task| &task.id),
                 &subtree_ids,
             );
         }
-        root.space_id = desired_space.id.clone();
-        root.touch(now);
-        let result = root.clone();
+        if command.status.is_some_and(TaskStatus::is_finished) {
+            if let Some(child_id) = first_unfinished_descendant_id(&updated_tasks, &current_task.id)
+            {
+                return Err(AppError::TaskCompletionBlockedByUnfinishedChild {
+                    task_id: current_task.id.clone(),
+                    child_id,
+                });
+            }
+            for task in &mut updated_tasks {
+                task.archived = true;
+                if task.id != current_task.id {
+                    task.touch(now);
+                }
+            }
+        }
+        updated_tasks[root_index].space_id = desired_space.id.clone();
+        updated_tasks[root_index].touch(now);
+        let result = updated_tasks[root_index].clone();
 
         for task in &updated_tasks {
             self.repository.save_task(task)?;
@@ -261,7 +276,11 @@ impl TaskService {
     }
 
     pub fn set_task_status(&self, command: UpdateTaskStatusCommand) -> Result<Task, AppError> {
-        ensure_active_status(command.status)?;
+        if command.status.is_finished() {
+            let outcome =
+                self.archive_task_subtree(&command.task_ref, Some(command.status), true)?;
+            return Ok(outcome.root_task.expect("task archive returns task"));
+        }
 
         let mut task = self.load_task_by_ref(&command.task_ref)?;
         task.status = command.status;
@@ -283,45 +302,13 @@ impl TaskService {
     }
 
     pub fn archive_task(&self, command: ArchiveTaskCommand) -> Result<OperationOutcome, AppError> {
-        let all_tasks = self.repository.list_all_tasks()?;
-        let root_task = self.resolve_task_from(&all_tasks, &command.task_ref)?;
-        let subtree_ids = collect_subtree_ids(&all_tasks, &root_task.id);
-        let now = OffsetDateTime::now_utc();
-
-        let updated_tasks = all_tasks
-            .iter()
-            .filter(|task| subtree_ids.contains(&task.id))
-            .cloned()
-            .map(|mut task| {
-                task.status = TaskStatus::Archived;
-                task.touch(now);
-                task
-            })
-            .collect::<Vec<_>>();
-
-        self.maintenance_service.execute_operation(
-            PendingOperationKind::TaskArchive,
-            updated_tasks
-                .iter()
-                .cloned()
-                .map(PendingOperationEntry::TaskUpsert)
-                .collect(),
-        )?;
-
-        let root_task = self.repository.load_task(&root_task.id)?;
-        Ok(OperationOutcome {
-            root_task: Some(root_task),
-            root_space: None,
-            affected_count: updated_tasks.len(),
-        })
+        self.archive_task_subtree(&command.task_ref, None, false)
     }
 
     pub fn restore_task(&self, command: RestoreTaskCommand) -> Result<OperationOutcome, AppError> {
-        ensure_active_status(command.status)?;
-
         let all_tasks = self.repository.list_all_tasks()?;
         let root_task = self.resolve_task_from(&all_tasks, &command.task_ref)?;
-        if !root_task.status.is_archived() {
+        if !root_task.archived {
             return Err(AppError::TaskMustBeArchived {
                 task_id: root_task.id,
                 action: "restore",
@@ -342,7 +329,7 @@ impl TaskService {
             .filter(|task| subtree_ids.contains(&task.id))
             .cloned()
             .map(|mut task| {
-                task.status = command.status;
+                task.archived = false;
                 task.touch(now);
                 task
             })
@@ -368,7 +355,7 @@ impl TaskService {
     pub fn purge_task(&self, command: PurgeTaskCommand) -> Result<OperationOutcome, AppError> {
         let all_tasks = self.repository.list_all_tasks()?;
         let root_task = self.resolve_task_from(&all_tasks, &command.task_ref)?;
-        if !root_task.status.is_archived() {
+        if !root_task.archived {
             return Err(AppError::TaskMustBeArchived {
                 task_id: root_task.id.clone(),
                 action: "purge",
@@ -385,7 +372,7 @@ impl TaskService {
 
         if let Some(offender) = all_tasks
             .iter()
-            .find(|task| subtree_ids.contains(&task.id) && !task.status.is_archived())
+            .find(|task| subtree_ids.contains(&task.id) && !task.archived)
         {
             return Err(AppError::TaskPurgeRequiresArchivedSubtree {
                 task_id: root_task.id.clone(),
@@ -477,6 +464,59 @@ impl TaskService {
         self.repository.save_task(task).map_err(AppError::from)
     }
 
+    fn archive_task_subtree(
+        &self,
+        reference: &str,
+        root_status: Option<TaskStatus>,
+        require_finished_descendants: bool,
+    ) -> Result<OperationOutcome, AppError> {
+        let all_tasks = self.repository.list_all_tasks()?;
+        let root_task = self.resolve_task_from(&all_tasks, reference)?;
+
+        if require_finished_descendants {
+            if let Some(child_id) = first_unfinished_descendant_id(&all_tasks, &root_task.id) {
+                return Err(AppError::TaskCompletionBlockedByUnfinishedChild {
+                    task_id: root_task.id,
+                    child_id,
+                });
+            }
+        }
+
+        let subtree_ids = collect_subtree_ids(&all_tasks, &root_task.id);
+        let now = OffsetDateTime::now_utc();
+        let updated_tasks = all_tasks
+            .iter()
+            .filter(|task| subtree_ids.contains(&task.id))
+            .cloned()
+            .map(|mut task| {
+                if task.id == root_task.id {
+                    if let Some(status) = root_status {
+                        task.status = status;
+                    }
+                }
+                task.archived = true;
+                task.touch(now);
+                task
+            })
+            .collect::<Vec<_>>();
+
+        self.maintenance_service.execute_operation(
+            PendingOperationKind::TaskArchive,
+            updated_tasks
+                .iter()
+                .cloned()
+                .map(PendingOperationEntry::TaskUpsert)
+                .collect(),
+        )?;
+
+        let root_task = self.repository.load_task(&root_task.id)?;
+        Ok(OperationOutcome {
+            root_task: Some(root_task),
+            root_space: None,
+            affected_count: updated_tasks.len(),
+        })
+    }
+
     fn load_task_by_ref(&self, reference: &str) -> Result<Task, AppError> {
         let all_tasks = self.repository.list_all_tasks()?;
         self.resolve_task_from(&all_tasks, reference)
@@ -526,14 +566,6 @@ impl TaskService {
             ensure_active_space(&space)?;
         }
         Ok(space)
-    }
-}
-
-pub(crate) fn ensure_active_status(status: TaskStatus) -> Result<(), AppError> {
-    if status.is_archived() {
-        Err(AppError::ArchivedStatusNotAllowed)
-    } else {
-        Ok(())
     }
 }
 
@@ -588,13 +620,22 @@ fn first_archived_ancestor_id(tasks: &[Task], task: &Task) -> Option<TaskId> {
         let parent = tasks
             .iter()
             .find(|candidate| candidate.id == current_parent_id)?;
-        if parent.status.is_archived() {
+        if parent.archived {
             return Some(parent.id.clone());
         }
         parent_id = parent.parent_id.clone();
     }
 
     None
+}
+
+fn first_unfinished_descendant_id(tasks: &[Task], root_id: &TaskId) -> Option<TaskId> {
+    let subtree_ids = collect_subtree_ids(tasks, root_id);
+    tasks
+        .iter()
+        .filter(|task| &task.id != root_id)
+        .find(|task| subtree_ids.contains(&task.id) && !task.status.is_finished())
+        .map(|task| task.id.clone())
 }
 
 fn move_direction_label(direction: MoveTaskDirection) -> &'static str {

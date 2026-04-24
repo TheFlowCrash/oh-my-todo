@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use time::OffsetDateTime;
 
-pub const APP_SCHEMA_VERSION: u32 = 1;
+pub const APP_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -13,7 +13,7 @@ pub enum TaskStatus {
     Todo,
     InProgress,
     Done,
-    Archived,
+    Close,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -80,6 +80,7 @@ pub struct Task {
     pub title: String,
     pub description: Option<String>,
     pub status: TaskStatus,
+    pub archived: bool,
     pub parent_id: Option<TaskId>,
     pub sort_order: i64,
     pub logs: Vec<TaskLog>,
@@ -177,20 +178,12 @@ pub struct AppState {
 }
 
 impl TaskStatus {
-    pub fn is_active(self) -> bool {
-        matches!(self, Self::Todo | Self::InProgress | Self::Done)
+    pub fn is_open(self) -> bool {
+        matches!(self, Self::Todo | Self::InProgress)
     }
 
-    pub fn is_archived(self) -> bool {
-        matches!(self, Self::Archived)
-    }
-
-    pub fn is_visible_in_view(self, view: ViewMode) -> bool {
-        match view {
-            ViewMode::Todo => matches!(self, Self::Todo | Self::InProgress),
-            ViewMode::Archive => matches!(self, Self::Done | Self::Archived),
-            ViewMode::All => true,
-        }
+    pub fn is_finished(self) -> bool {
+        matches!(self, Self::Done | Self::Close)
     }
 }
 
@@ -238,6 +231,7 @@ impl Task {
             title: title.into(),
             description: None,
             status: TaskStatus::Todo,
+            archived: false,
             parent_id: None,
             sort_order,
             logs: Vec::new(),
@@ -246,12 +240,16 @@ impl Task {
         }
     }
 
-    pub fn storage_bucket(&self) -> &'static str {
-        if self.status.is_archived() {
-            "archive"
-        } else {
-            "todo"
+    pub fn is_visible_in_view(&self, view: ViewMode) -> bool {
+        match view {
+            ViewMode::Todo => !self.archived,
+            ViewMode::Archive => self.archived,
+            ViewMode::All => true,
         }
+    }
+
+    pub fn storage_bucket(&self) -> &'static str {
+        if self.archived { "archive" } else { "todo" }
     }
 
     pub fn touch(&mut self, now: OffsetDateTime) {

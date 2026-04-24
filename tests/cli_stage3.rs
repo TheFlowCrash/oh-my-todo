@@ -21,23 +21,14 @@ fn cli_stage3_task_archive_restore_and_purge_flow() {
     assert!(archived.contains("Archived task"));
 
     let archive_list = run(&data_dir, ["task", "list", "--view", "archive"]);
-    assert!(archive_list.contains("[a] Run 5km"));
+    assert!(archive_list.contains("[ ] Run 5km"));
     assert!(archive_list.contains("Warm up"));
 
-    let restored = run(
-        &data_dir,
-        [
-            "task",
-            "restore",
-            parent_id.as_str(),
-            "--status",
-            "in_progress",
-        ],
-    );
+    let restored = run(&data_dir, ["task", "restore", parent_id.as_str()]);
     assert!(restored.contains("Restored task"));
     let todo_list = run(&data_dir, ["task", "list"]);
-    assert!(todo_list.contains("[~] Run 5km"));
-    assert!(todo_list.contains("[~] Warm up"));
+    assert!(todo_list.contains("[ ] Run 5km"));
+    assert!(todo_list.contains("[ ] Warm up"));
 
     run(&data_dir, ["task", "archive", parent_id.as_str()]);
 

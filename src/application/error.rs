@@ -17,8 +17,6 @@ pub enum AppError {
     MissingCurrentSpace,
     #[error("space `{0}` is archived and cannot be used here")]
     ArchivedSpace(String),
-    #[error("`archived` status cannot be set through this command")]
-    ArchivedStatusNotAllowed,
     #[error(
         "parent task `{parent_id}` belongs to space `{parent_space_id}`, but target space is `{target_space_id}`"
     )]
@@ -42,6 +40,8 @@ pub enum AppError {
     SpaceSlugConflict(String),
     #[error("task edit requires at least one change")]
     NoTaskChanges,
+    #[error("task `{task_id}` cannot be completed while child `{child_id}` is still unfinished")]
+    TaskCompletionBlockedByUnfinishedChild { task_id: TaskId, child_id: TaskId },
     #[error("task `{task_id}` must be archived before `{action}`")]
     TaskMustBeArchived {
         task_id: TaskId,
@@ -93,12 +93,12 @@ impl AppError {
             | Self::Validation(_)
             | Self::MissingCurrentSpace
             | Self::ArchivedSpace(_)
-            | Self::ArchivedStatusNotAllowed
             | Self::ParentSpaceMismatch { .. }
             | Self::TaskParentCycle { .. }
             | Self::CrossSpaceParentMismatch { .. }
             | Self::SpaceSlugConflict(_)
             | Self::NoTaskChanges
+            | Self::TaskCompletionBlockedByUnfinishedChild { .. }
             | Self::TaskMustBeArchived { .. }
             | Self::SpaceMustBeArchived { .. }
             | Self::TaskPurgeRequiresRecursive { .. }
@@ -121,9 +121,6 @@ impl AppError {
                 "create a space with `todo space add <NAME>` or select one with `todo space use <SPACE_REF>`",
             ),
             Self::ArchivedSpace(_) => Some("choose an active space instead"),
-            Self::ArchivedStatusNotAllowed => {
-                Some("use todo, in_progress, or done; archive/restore arrives in a later stage")
-            }
             Self::ParentSpaceMismatch { .. } => {
                 Some("clear the parent or choose a parent task in the target space")
             }
@@ -131,11 +128,12 @@ impl AppError {
                 Some("use `--clear-parent` or set a new parent in the target space")
             }
             Self::NoTaskChanges => Some("pass at least one edit flag such as --title or --status"),
+            Self::TaskCompletionBlockedByUnfinishedChild { .. } => {
+                Some("finish or close every subtask first")
+            }
             Self::TaskMustBeArchived {
                 action: "restore", ..
-            } => Some(
-                "use `todo task status set <TASK_REF> ...` for done tasks; restore only applies to archived tasks",
-            ),
+            } => Some("restore only applies to archived tasks"),
             Self::TaskMustBeArchived {
                 action: "purge", ..
             } => Some("archive the task first with `todo task archive <TASK_REF>`"),

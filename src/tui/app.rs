@@ -43,6 +43,7 @@ pub enum ConfirmModal {
 #[derive(Debug, Clone)]
 pub enum Mode {
     Browse,
+    SpaceManager(SpaceManagerState),
     Form(FormModal),
     Confirm(ConfirmModal),
     Filter(FilterState),
@@ -113,14 +114,23 @@ pub struct FilterState {
     pub input: TextInput,
 }
 
+#[derive(Debug, Clone)]
+pub struct SpaceManagerState {
+    pub scroll: usize,
+    pub origin_focus: FocusArea,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MouseTarget {
     SwitchView(ViewMode),
     CycleSort,
     OpenFilter,
+    OpenSpaceManager,
     OpenHelp,
     CloseHelp,
-    SwitchSpace(usize),
+    CloseSpaceManager,
+    SelectManagedSpace(usize),
+    OpenSelectedSpace,
     SetSpaceListMode(SpaceListMode),
     OpenSpaceCreate,
     OpenSpaceRename,
@@ -135,7 +145,6 @@ pub enum MouseTarget {
     EditTask,
     SetTaskStatus(TaskStatus),
     AddLog,
-    ArchiveTask,
     RestoreTask,
     OpenPurgeTask,
     MoveTask(MoveTaskDirection),
@@ -169,6 +178,7 @@ pub struct Hitbox {
 pub struct UiState {
     pub hitboxes: Vec<Hitbox>,
     pub frame_area: Option<Rect>,
+    pub space_manager_viewport: Option<Rect>,
     pub task_tree_viewport: Option<Rect>,
     pub details_viewport: Option<Rect>,
 }
@@ -177,6 +187,7 @@ pub struct UiState {
 pub struct TuiApp {
     pub should_quit: bool,
     pub mode: Mode,
+    pub background_mode: Option<Mode>,
     pub focus_area: FocusArea,
     pub return_focus: FocusArea,
     pub current_space_id: Option<SpaceId>,
@@ -221,6 +232,7 @@ impl TuiApp {
         let mut app = Self {
             should_quit: false,
             mode: Mode::Browse,
+            background_mode: None,
             focus_area: state.tui_memory.focus_area,
             return_focus: state.tui_memory.focus_area,
             current_space_id: state.current_space_id.clone(),
@@ -255,22 +267,14 @@ impl TuiApp {
 
         let result = match self.mode.clone() {
             Mode::Browse => self.handle_browse_key(context, key),
+            Mode::SpaceManager(manager) => self.handle_space_manager_key(context, key, manager),
             Mode::Form(form) => self.handle_form_key(context, key, form),
             Mode::Confirm(confirm) => self.handle_confirm_key(context, key, confirm),
             Mode::Filter(filter) => self.handle_filter_key(key, filter),
             Mode::Help => self.handle_help_key(key),
         };
 
-        match result {
-            Ok(changed) => Ok(changed),
-            Err(error) => {
-                self.status_message = Some(match error.hint() {
-                    Some(hint) => format!("{error} | {hint}"),
-                    None => error.to_string(),
-                });
-                Ok(true)
-            }
-        }
+        Ok(self.handle_interaction_result(result))
     }
 
     pub fn handle_mouse(
@@ -279,13 +283,15 @@ impl TuiApp {
         mouse: MouseEvent,
     ) -> Result<bool, AppError> {
         let position = Position::new(mouse.column, mouse.row);
-        match mouse.kind {
+        let result = match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => self.handle_click(context, position),
             MouseEventKind::ScrollDown => self.handle_scroll(context, position, 3),
             MouseEventKind::ScrollUp => self.handle_scroll(context, position, -3),
             MouseEventKind::Moved => Ok(self.update_hover(position)),
             _ => Ok(false),
-        }
+        };
+
+        Ok(self.handle_interaction_result(result))
     }
 
     pub fn persist(&mut self, context: &AppContext) -> Result<(), AppError> {
@@ -328,9 +334,19 @@ impl TuiApp {
             .and_then(|space_id| self.spaces.iter().find(|space| &space.space.id == space_id))
     }
 
+    pub fn selected_space_summary(&self) -> Option<&SpaceSummary> {
+        self.spaces.get(self.space_index)
+    }
+
+    pub fn space_button_label(&self) -> String {
+        self.current_space()
+            .map(|space| format!("Space: {}", space.space.name))
+            .unwrap_or_else(|| "Space: none".to_owned())
+    }
+
     pub fn task_tree_empty_message(&self) -> &'static str {
         if self.spaces.is_empty() {
-            "No spaces yet. Click + New to create your first space."
+            "No spaces yet. Click the Space button to open the manager and create your first space."
         } else if self.task_filter.trim().is_empty() {
             "No tasks in this view. Click + Task to create one."
         } else {
@@ -340,35 +356,26 @@ impl TuiApp {
 
     pub fn help_text(&self) -> String {
         match &self.mode {
-            Mode::Help => "Review the guide, then click Close or press Esc. Ctrl+C quit".to_owned(),
-            Mode::Filter(_) => {
-                "Type a filter, then click Apply, Clear, or Cancel. Ctrl+C quit".to_owned()
+            Mode::Help => "[Scroll] [Close] [Ctrl+C Quit]".to_owned(),
+            Mode::SpaceManager(_) => {
+                "[Select Space] [Open] [Manage] [Esc Close] [Ctrl+C Quit]".to_owned()
             }
+            Mode::Filter(_) => "[Type Filter] [Apply] [Clear] [Cancel] [Ctrl+C Quit]".to_owned(),
             Mode::Form(FormModal::Space(_)) => {
-                "Click field to edit | Click Save or Cancel | Ctrl+C quit".to_owned()
+                "[Type Name] [Save] [Cancel] [Ctrl+C Quit]".to_owned()
             }
             Mode::Form(FormModal::Task(_)) => {
-                "Click fields to edit | Click status chips | Click Save or Cancel | Ctrl+C quit"
-                    .to_owned()
+                "[Type] [Pick Status] [Save] [Cancel] [Ctrl+C Quit]".to_owned()
             }
-            Mode::Form(FormModal::Log(_)) => {
-                "Type in the message box | Click Save or Cancel | Ctrl+C quit".to_owned()
-            }
-            Mode::Confirm(_) => {
-                "Type purge if required | Click Cancel or Purge | Ctrl+C quit".to_owned()
-            }
+            Mode::Form(FormModal::Log(_)) => "[Type Log] [Save] [Cancel] [Ctrl+C Quit]".to_owned(),
+            Mode::Confirm(_) => "[Type purge] [Confirm] [Cancel] [Ctrl+C Quit]".to_owned(),
             Mode::Browse => match self.focus_area {
-                FocusArea::Spaces => {
-                    "Click a space to switch | Toggle Active/All | Manage spaces | Ctrl+C quit"
-                        .to_owned()
-                }
+                FocusArea::Spaces => "[Spaces] [Select] [Open] [Action] [Ctrl+C Quit]".to_owned(),
                 FocusArea::TaskTree => {
-                    "Click task rows to select | Click arrows to fold | Filter and scroll | Ctrl+C quit"
-                        .to_owned()
+                    "[Spaces] [Scroll] [Select] [Toggle] [Ctrl+C Quit]".to_owned()
                 }
                 FocusArea::Details => {
-                    "Click action buttons | Move tasks in manual sort | Scroll details | Ctrl+C quit"
-                        .to_owned()
+                    "[Spaces] [Scroll] [Select] [Action] [Ctrl+C Quit]".to_owned()
                 }
             },
         }
@@ -427,6 +434,24 @@ impl TuiApp {
                 Ok(true)
             }
             _ => Ok(false),
+        }
+    }
+
+    fn handle_space_manager_key(
+        &mut self,
+        _context: &AppContext,
+        key: KeyEvent,
+        manager: SpaceManagerState,
+    ) -> Result<bool, AppError> {
+        match key.code {
+            KeyCode::Esc => {
+                self.close_modal(false);
+                Ok(true)
+            }
+            _ => {
+                self.mode = Mode::SpaceManager(manager);
+                Ok(false)
+            }
         }
     }
 
@@ -500,6 +525,10 @@ impl TuiApp {
         self.ui.hitboxes.push(Hitbox { rect, target });
     }
 
+    pub fn set_space_manager_viewport(&mut self, rect: Rect) {
+        self.ui.space_manager_viewport = Some(rect);
+    }
+
     pub fn set_task_tree_viewport(&mut self, rect: Rect) {
         self.ui.task_tree_viewport = Some(rect);
     }
@@ -520,29 +549,16 @@ impl TuiApp {
         }
     }
 
-    pub fn space_context_label(&self) -> String {
-        match (self.current_space(), self.current_active_space()) {
-            (Some(viewed), Some(current)) if viewed.space.id != current.space.id => format!(
-                "Viewing: {} [{}] | Current: {}",
-                viewed.space.slug,
-                if viewed.space.state.is_archived() {
-                    "archived"
-                } else {
-                    "active"
-                },
-                current.space.slug,
-            ),
-            (Some(viewed), _) => format!(
-                "Space: {} [{}]",
-                viewed.space.slug,
-                if viewed.space.state.is_archived() {
-                    "archived"
-                } else {
-                    "active"
-                }
-            ),
-            (None, Some(current)) => format!("Current: {}", current.space.slug),
-            (None, None) => "Space: none".to_owned(),
+    fn handle_interaction_result(&mut self, result: Result<bool, AppError>) -> bool {
+        match result {
+            Ok(changed) => changed,
+            Err(error) => {
+                self.status_message = Some(match error.hint() {
+                    Some(hint) => format!("{error} | {hint}"),
+                    None => error.to_string(),
+                });
+                true
+            }
         }
     }
 
@@ -571,6 +587,18 @@ impl TuiApp {
         position: Position,
         delta: isize,
     ) -> Result<bool, AppError> {
+        if matches!(self.mode, Mode::SpaceManager(_)) {
+            if let Some(viewport) = self.ui.space_manager_viewport {
+                if viewport.contains(position) {
+                    self.focus_area = FocusArea::Spaces;
+                    self.scroll_space_manager(delta);
+                    return Ok(true);
+                }
+            }
+
+            return Ok(false);
+        }
+
         if !matches!(self.mode, Mode::Browse) {
             return Ok(false);
         }
@@ -615,6 +643,10 @@ impl TuiApp {
                 self.open_filter();
                 Ok(true)
             }
+            MouseTarget::OpenSpaceManager => {
+                self.open_space_manager();
+                Ok(true)
+            }
             MouseTarget::OpenHelp => {
                 self.open_help();
                 Ok(true)
@@ -623,9 +655,17 @@ impl TuiApp {
                 self.close_modal(false);
                 Ok(true)
             }
-            MouseTarget::SwitchSpace(index) => {
+            MouseTarget::CloseSpaceManager => {
+                self.close_modal(false);
+                Ok(true)
+            }
+            MouseTarget::SelectManagedSpace(index) => {
                 self.focus_area = FocusArea::Spaces;
-                self.switch_space_to_index(context, index)
+                self.select_managed_space(index)
+            }
+            MouseTarget::OpenSelectedSpace => {
+                self.focus_area = FocusArea::Spaces;
+                self.open_selected_space(context)
             }
             MouseTarget::SetSpaceListMode(mode) => {
                 self.focus_area = FocusArea::Spaces;
@@ -705,10 +745,6 @@ impl TuiApp {
                 self.focus_area = FocusArea::Details;
                 self.open_log_form();
                 Ok(true)
-            }
-            MouseTarget::ArchiveTask => {
-                self.focus_area = FocusArea::Details;
-                self.archive_selected_task(context)
             }
             MouseTarget::RestoreTask => {
                 self.focus_area = FocusArea::Details;
@@ -874,56 +910,137 @@ impl TuiApp {
             .cloned()
     }
 
-    fn open_space_form_create(&mut self) {
+    fn base_focus_area(&self) -> FocusArea {
+        match &self.mode {
+            Mode::SpaceManager(state) => state.origin_focus,
+            _ => match &self.background_mode {
+                Some(Mode::SpaceManager(state)) => state.origin_focus,
+                _ => self.return_focus,
+            },
+        }
+    }
+
+    fn enter_root_overlay(&mut self, mode: Mode) {
+        self.return_focus = if matches!(self.mode, Mode::Browse) {
+            self.focus_area
+        } else {
+            self.base_focus_area()
+        };
+        self.background_mode = Some(Mode::Browse);
+        self.mode = mode;
+    }
+
+    fn enter_child_overlay(&mut self, mode: Mode) {
         self.return_focus = self.focus_area;
-        self.mode = Mode::Form(FormModal::Space(SpaceFormState {
+        self.background_mode = Some(self.mode.clone());
+        self.mode = mode;
+    }
+
+    fn open_space_manager(&mut self) {
+        let origin_focus = if matches!(self.mode, Mode::Browse) {
+            self.focus_area
+        } else {
+            self.base_focus_area()
+        };
+        self.enter_root_overlay(Mode::SpaceManager(SpaceManagerState {
+            scroll: 0,
+            origin_focus,
+        }));
+        self.focus_area = FocusArea::Spaces;
+    }
+
+    pub fn space_manager_scroll(&self) -> usize {
+        match &self.mode {
+            Mode::SpaceManager(state) => state.scroll,
+            _ => 0,
+        }
+    }
+
+    pub fn set_space_manager_scroll(&mut self, scroll: usize) {
+        if let Mode::SpaceManager(state) = &mut self.mode {
+            state.scroll = scroll;
+        }
+    }
+
+    fn select_managed_space(&mut self, index: usize) -> Result<bool, AppError> {
+        if index >= self.spaces.len() {
+            return Ok(false);
+        }
+
+        self.space_index = index;
+        self.ensure_space_manager_selection_visible();
+        Ok(true)
+    }
+
+    fn open_selected_space(&mut self, context: &AppContext) -> Result<bool, AppError> {
+        let Some(space) = self.selected_space_summary().cloned() else {
+            self.status_message = Some("Select a space first.".to_owned());
+            return Ok(true);
+        };
+
+        if space.space.state.is_active() {
+            context.space_service.use_space(SetCurrentSpaceCommand {
+                space_ref: space.space.id.as_str().to_owned(),
+            })?;
+            self.current_space_id = Some(space.space.id.clone());
+            self.status_message = Some(format!("Switched to space {}.", space.space.name));
+        } else {
+            self.status_message = Some(format!("Viewing archived space {}.", space.space.name));
+        }
+
+        self.viewed_space_id = Some(space.space.id.clone());
+        self.close_modal(false);
+        self.reload(context)?;
+        Ok(true)
+    }
+
+    fn open_space_form_create(&mut self) {
+        self.enter_child_overlay(Mode::Form(FormModal::Space(SpaceFormState {
             mode: SpaceFormMode::Create,
             name: TextInput::single_line(""),
-        }));
+        })));
     }
 
     fn open_filter(&mut self) {
-        self.return_focus = self.focus_area;
-        self.mode = Mode::Filter(FilterState {
+        self.enter_root_overlay(Mode::Filter(FilterState {
             input: TextInput::single_line(&self.task_filter),
-        });
+        }));
     }
 
     fn open_help(&mut self) {
-        self.return_focus = self.focus_area;
-        self.mode = Mode::Help;
+        self.enter_root_overlay(Mode::Help);
     }
 
     fn open_space_form_rename(&mut self) {
         if let Some(space) = self
-            .current_space()
+            .selected_space_summary()
             .map(|space| (space.space.id.clone(), space.space.name.clone()))
         {
-            self.return_focus = self.focus_area;
-            self.mode = Mode::Form(FormModal::Space(SpaceFormState {
+            self.enter_child_overlay(Mode::Form(FormModal::Space(SpaceFormState {
                 mode: SpaceFormMode::Rename { space_id: space.0 },
                 name: TextInput::single_line(space.1),
-            }));
+            })));
         } else {
             self.status_message = Some("No space selected to rename.".to_owned());
         }
     }
 
     fn open_purge_space_confirm(&mut self) {
-        if let Some(space) = self.current_space().cloned() {
+        if let Some(space) = self.selected_space_summary().cloned() {
             if !space.space.state.is_archived() {
                 self.status_message =
                     Some("Only archived spaces can be purged. Archive the space first.".to_owned());
                 return;
             }
 
-            self.return_focus = self.focus_area;
-            self.mode = Mode::Confirm(ConfirmModal::PurgeSpace(PurgeSpaceConfirmState {
-                space_id: space.space.id.clone(),
-                space_name: space.space.name.clone(),
-                task_count: space.counts.todo_tasks + space.counts.archived_tasks,
-                phrase: TextInput::single_line(""),
-            }));
+            self.enter_child_overlay(Mode::Confirm(ConfirmModal::PurgeSpace(
+                PurgeSpaceConfirmState {
+                    space_id: space.space.id.clone(),
+                    space_name: space.space.name.clone(),
+                    task_count: space.counts.todo_tasks + space.counts.archived_tasks,
+                    phrase: TextInput::single_line(""),
+                },
+            )));
         } else {
             self.status_message = Some("Select a space first to purge it.".to_owned());
         }
@@ -935,14 +1052,13 @@ impl TuiApp {
                 Some("Restore this space before creating new tasks inside it.".to_owned());
             return;
         }
-        self.return_focus = self.focus_area;
-        self.mode = Mode::Form(FormModal::Task(TaskFormState {
+        self.enter_root_overlay(Mode::Form(FormModal::Task(TaskFormState {
             mode: TaskFormMode::CreateRoot,
             focus: TaskFormField::Title,
             title: TextInput::single_line(""),
             description: TextInput::multiline(""),
             status: TaskStatus::Todo,
-        }));
+        })));
     }
 
     fn open_task_form_create_child(&mut self) {
@@ -957,14 +1073,13 @@ impl TuiApp {
                     memory.expanded_task_ids.push(task_id.clone());
                 }
             }
-            self.return_focus = self.focus_area;
-            self.mode = Mode::Form(FormModal::Task(TaskFormState {
+            self.enter_root_overlay(Mode::Form(FormModal::Task(TaskFormState {
                 mode: TaskFormMode::CreateChild { parent_id: task_id },
                 focus: TaskFormField::Title,
                 title: TextInput::single_line(""),
                 description: TextInput::multiline(""),
                 status: TaskStatus::Todo,
-            }));
+            })));
         } else {
             self.status_message = Some("Select a task first to create a subtask.".to_owned());
         }
@@ -977,8 +1092,7 @@ impl TuiApp {
             return;
         }
         if let Some(details) = self.details.as_ref() {
-            self.return_focus = self.focus_area;
-            self.mode = Mode::Form(FormModal::Task(TaskFormState {
+            self.enter_root_overlay(Mode::Form(FormModal::Task(TaskFormState {
                 mode: TaskFormMode::Edit {
                     task_id: details.task.id.clone(),
                 },
@@ -988,7 +1102,7 @@ impl TuiApp {
                     details.task.description.clone().unwrap_or_default(),
                 ),
                 status: details.task.status,
-            }));
+            })));
         } else {
             self.status_message = Some("Select a task first to edit it.".to_owned());
         }
@@ -1001,12 +1115,11 @@ impl TuiApp {
             return;
         }
         if let Some(details) = self.details.as_ref() {
-            self.return_focus = self.focus_area;
-            self.mode = Mode::Form(FormModal::Log(LogFormState {
+            self.enter_root_overlay(Mode::Form(FormModal::Log(LogFormState {
                 task_id: details.task.id.clone(),
                 task_title: details.task.title.clone(),
                 input: TextInput::multiline(""),
-            }));
+            })));
         } else {
             self.status_message = Some("Select a task first to add a log.".to_owned());
         }
@@ -1019,27 +1132,28 @@ impl TuiApp {
             return Ok(());
         }
 
-        if let Some((task_id, task_title, task_status)) = self.selected_task().map(|selected| {
+        if let Some((task_id, task_title, archived)) = self.selected_task().map(|selected| {
             (
                 selected.task.id.clone(),
                 selected.task.title.clone(),
-                selected.task.status,
+                selected.task.archived,
             )
         }) {
-            if !matches!(task_status, TaskStatus::Archived) {
+            if !archived {
                 self.status_message =
                     Some("Only archived tasks can be purged. Archive the task first.".to_owned());
                 return Ok(());
             }
             let affected_count = self.subtree_count(&task_id);
-            self.return_focus = self.focus_area;
-            self.mode = Mode::Confirm(ConfirmModal::PurgeTask(PurgeTaskConfirmState {
-                task_id,
-                task_title,
-                affected_count,
-                requires_phrase: affected_count > 1,
-                phrase: TextInput::single_line(""),
-            }));
+            self.enter_root_overlay(Mode::Confirm(ConfirmModal::PurgeTask(
+                PurgeTaskConfirmState {
+                    task_id,
+                    task_title,
+                    affected_count,
+                    requires_phrase: affected_count > 1,
+                    phrase: TextInput::single_line(""),
+                },
+            )));
         } else {
             self.status_message = Some("Select a task first to purge it.".to_owned());
         }
@@ -1061,6 +1175,7 @@ impl TuiApp {
                 })?;
                 self.current_space_id = Some(created.id.clone());
                 self.viewed_space_id = Some(created.id.clone());
+                self.space_index = usize::MAX;
                 self.status_message = Some(format!("Created space {}.", created.name));
             }
             SpaceFormMode::Rename { space_id } => {
@@ -1207,8 +1322,13 @@ impl TuiApp {
     }
 
     fn close_modal(&mut self, clear_message: bool) {
-        self.mode = Mode::Browse;
+        let next_mode = self.background_mode.take().unwrap_or(Mode::Browse);
+        self.mode = next_mode.clone();
         self.focus_area = self.return_focus;
+        if let Mode::SpaceManager(state) = next_mode {
+            self.focus_area = FocusArea::Spaces;
+            self.return_focus = state.origin_focus;
+        }
         self.hovered_target = None;
         if clear_message && self.status_message.is_none() {
             self.status_message = None;
@@ -1246,27 +1366,6 @@ impl TuiApp {
         Ok(true)
     }
 
-    fn switch_space_to_index(
-        &mut self,
-        context: &AppContext,
-        index: usize,
-    ) -> Result<bool, AppError> {
-        if let Some(space) = self.spaces.get(index) {
-            if space.space.state.is_active() {
-                context.space_service.use_space(SetCurrentSpaceCommand {
-                    space_ref: space.space.id.as_str().to_owned(),
-                })?;
-                self.current_space_id = Some(space.space.id.clone());
-            }
-            self.viewed_space_id = Some(space.space.id.clone());
-            self.space_index = index;
-            self.reload(context)?;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
-    }
-
     fn set_selected_task_status(
         &mut self,
         context: &AppContext,
@@ -1290,36 +1389,11 @@ impl TuiApp {
                 status,
             })?;
         self.select_task_after_action(updated.id.clone());
-        self.status_message = Some(format!(
-            "Set {} to {}.",
-            updated.title,
-            status_label(status)
-        ));
-        self.reload(context)?;
-        Ok(true)
-    }
-
-    fn archive_selected_task(&mut self, context: &AppContext) -> Result<bool, AppError> {
-        if !self.can_mutate_viewed_space() {
-            self.status_message =
-                Some("Restore this space before archiving tasks inside it.".to_owned());
-            return Ok(true);
-        }
-
-        let Some(task_id) = self.selected_task_id() else {
-            self.status_message = Some("Select a task first.".to_owned());
-            return Ok(true);
-        };
-
-        let outcome = context.task_service.archive_task(
-            crate::application::commands::ArchiveTaskCommand {
-                task_ref: task_id.as_str().to_owned(),
-            },
-        )?;
-        if let Some(task) = outcome.root_task {
-            self.select_task_after_action(task.id);
-            self.status_message = Some(format!("Archived {} task(s).", outcome.affected_count));
-        }
+        self.status_message = Some(if updated.archived && status.is_finished() {
+            format!("Archived {} as {}.", updated.title, status_label(status))
+        } else {
+            format!("Set {} to {}.", updated.title, status_label(status))
+        });
         self.reload(context)?;
         Ok(true)
     }
@@ -1338,7 +1412,6 @@ impl TuiApp {
 
         let outcome = context.task_service.restore_task(RestoreTaskCommand {
             task_ref: task_id.as_str().to_owned(),
-            status: TaskStatus::Todo,
         })?;
         if let Some(task) = outcome.root_task {
             self.select_task_after_action(task.id);
@@ -1349,7 +1422,7 @@ impl TuiApp {
     }
 
     fn archive_selected_space(&mut self, context: &AppContext) -> Result<bool, AppError> {
-        let Some(space) = self.current_space().cloned() else {
+        let Some(space) = self.selected_space_summary().cloned() else {
             self.status_message = Some("Select a space first.".to_owned());
             return Ok(true);
         };
@@ -1368,7 +1441,7 @@ impl TuiApp {
     }
 
     fn restore_selected_space(&mut self, context: &AppContext) -> Result<bool, AppError> {
-        let Some(space) = self.current_space().cloned() else {
+        let Some(space) = self.selected_space_summary().cloned() else {
             self.status_message = Some("Select a space first.".to_owned());
             return Ok(true);
         };
@@ -1426,6 +1499,9 @@ impl TuiApp {
     fn reload(&mut self, context: &AppContext) -> Result<(), AppError> {
         let previous_selected_task_id = self.selected_task_id();
         let previous_selected_index = self.task_list_state.selected();
+        let previous_selected_space_id = self
+            .selected_space_summary()
+            .map(|space| space.space.id.clone());
         self.current_space_id = context.app_state_service.load()?.current_space_id;
 
         self.spaces = context.space_service.list_spaces(ListSpacesQuery {
@@ -1451,13 +1527,19 @@ impl TuiApp {
             }
         }
 
-        self.space_index = self
-            .viewed_space_id
+        self.space_index = previous_selected_space_id
             .as_ref()
             .and_then(|space_id| {
                 self.spaces
                     .iter()
                     .position(|space| &space.space.id == space_id)
+            })
+            .or_else(|| {
+                self.viewed_space_id.as_ref().and_then(|space_id| {
+                    self.spaces
+                        .iter()
+                        .position(|space| &space.space.id == space_id)
+                })
             })
             .unwrap_or(0);
 
@@ -1553,6 +1635,19 @@ impl TuiApp {
         self.ensure_selected_task_visible();
     }
 
+    fn scroll_space_manager(&mut self, delta: isize) {
+        let viewport_height = self
+            .ui
+            .space_manager_viewport
+            .map(|rect| rect.height as usize)
+            .unwrap_or(1)
+            .max(1);
+        let max_offset = self.spaces.len().saturating_sub(viewport_height);
+        let current = self.space_manager_scroll() as isize;
+        let next = (current + delta).clamp(0, max_offset as isize) as usize;
+        self.set_space_manager_scroll(next);
+    }
+
     fn scroll_task_tree(&mut self, delta: isize) {
         let viewport_height = self
             .ui
@@ -1589,6 +1684,21 @@ impl TuiApp {
             *self.task_list_state.offset_mut() = selected;
         } else if selected >= offset.saturating_add(viewport_height) {
             *self.task_list_state.offset_mut() = selected.saturating_sub(viewport_height - 1);
+        }
+    }
+
+    pub fn ensure_space_manager_selection_visible(&mut self) {
+        let viewport_height = self
+            .ui
+            .space_manager_viewport
+            .map(|rect| rect.height as usize)
+            .unwrap_or(1)
+            .max(1);
+        let offset = self.space_manager_scroll();
+        if self.space_index < offset {
+            self.set_space_manager_scroll(self.space_index);
+        } else if self.space_index >= offset.saturating_add(viewport_height) {
+            self.set_space_manager_scroll(self.space_index.saturating_sub(viewport_height - 1));
         }
     }
 
@@ -1793,7 +1903,7 @@ fn status_label(status: TaskStatus) -> &'static str {
         TaskStatus::Todo => "todo",
         TaskStatus::InProgress => "in_progress",
         TaskStatus::Done => "done",
-        TaskStatus::Archived => "archived",
+        TaskStatus::Close => "close",
     }
 }
 
@@ -1820,15 +1930,21 @@ pub(crate) fn collect_subtree_ids(tasks: &[Task], root_id: &TaskId) -> HashSet<T
 #[cfg(test)]
 mod tests {
     use super::{
-        ConfirmModal, FormModal, Mode, PurgeTaskConfirmState, SpaceFormMode, SpaceFormState,
-        TuiApp, build_visible_tasks, filter_task_entries, is_global_quit_shortcut,
+        ConfirmModal, FormModal, Mode, MouseTarget, PurgeTaskConfirmState, SpaceFormMode,
+        SpaceFormState, TuiApp, build_visible_tasks, filter_task_entries, is_global_quit_shortcut,
     };
     use crate::application::bootstrap::{BootstrapOptions, bootstrap};
-    use crate::application::queries::TaskListEntry;
-    use crate::domain::{FocusArea, SpaceId, Task, TaskId};
+    use crate::application::commands::{
+        CreateSpaceCommand, CreateTaskCommand, SetCurrentSpaceCommand,
+    };
+    use crate::application::queries::{ListTasksQuery, TaskListEntry};
+    use crate::domain::{FocusArea, SpaceId, Task, TaskId, TaskStatus};
     use crate::tui::LaunchOptions;
     use crate::tui::input::TextInput;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::{
+        KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    };
+    use ratatui::layout::Rect;
     use std::collections::HashSet;
     use tempfile::tempdir;
 
@@ -1939,5 +2055,154 @@ mod tests {
         assert!(changed);
         assert!(matches!(app.mode, Mode::Browse));
         assert_eq!(app.focus_area, FocusArea::Spaces);
+    }
+
+    #[test]
+    fn space_manager_restores_previous_focus_after_nested_dialog() {
+        let temp_dir = tempdir().unwrap();
+        let context = bootstrap(BootstrapOptions {
+            data_root: Some(temp_dir.path().join("app_data")),
+        })
+        .unwrap();
+        let mut app = TuiApp::new(&context, LaunchOptions::default()).unwrap();
+        app.focus_area = FocusArea::TaskTree;
+
+        app.open_space_manager();
+        assert!(matches!(app.mode, Mode::SpaceManager(_)));
+        assert_eq!(app.focus_area, FocusArea::Spaces);
+
+        app.open_space_form_create();
+        assert!(matches!(app.mode, Mode::Form(FormModal::Space(_))));
+
+        let changed = app
+            .handle_key(&context, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+        assert!(changed);
+        assert!(matches!(app.mode, Mode::SpaceManager(_)));
+        assert_eq!(app.focus_area, FocusArea::Spaces);
+
+        let changed = app
+            .handle_key(&context, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+        assert!(changed);
+        assert!(matches!(app.mode, Mode::Browse));
+        assert_eq!(app.focus_area, FocusArea::TaskTree);
+    }
+
+    #[test]
+    fn root_popup_replaces_existing_popup_instead_of_nesting() {
+        let temp_dir = tempdir().unwrap();
+        let context = bootstrap(BootstrapOptions {
+            data_root: Some(temp_dir.path().join("app_data")),
+        })
+        .unwrap();
+        let mut app = TuiApp::new(&context, LaunchOptions::default()).unwrap();
+        app.focus_area = FocusArea::TaskTree;
+
+        app.open_space_manager();
+        assert!(matches!(app.mode, Mode::SpaceManager(_)));
+
+        app.open_help();
+        assert!(matches!(app.mode, Mode::Help));
+
+        let changed = app
+            .handle_key(&context, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE))
+            .unwrap();
+        assert!(changed);
+        assert!(matches!(app.mode, Mode::Browse));
+        assert_eq!(app.focus_area, FocusArea::TaskTree);
+    }
+
+    #[test]
+    fn mouse_validation_errors_become_status_message_instead_of_exiting() {
+        let temp_dir = tempdir().unwrap();
+        let context = bootstrap(BootstrapOptions {
+            data_root: Some(temp_dir.path().join("app_data")),
+        })
+        .unwrap();
+
+        let space = context
+            .space_service
+            .create_space(CreateSpaceCommand {
+                name: "Personal".to_owned(),
+            })
+            .unwrap();
+        context
+            .space_service
+            .use_space(SetCurrentSpaceCommand {
+                space_ref: space.id.as_str().to_owned(),
+            })
+            .unwrap();
+
+        let parent = context
+            .task_service
+            .create_task(CreateTaskCommand {
+                title: "Parent".to_owned(),
+                space_ref: None,
+                description: None,
+                parent_ref: None,
+                status: TaskStatus::Todo,
+            })
+            .unwrap();
+        context
+            .task_service
+            .create_task(CreateTaskCommand {
+                title: "Child".to_owned(),
+                space_ref: None,
+                description: None,
+                parent_ref: Some(parent.id.as_str().to_owned()),
+                status: TaskStatus::Todo,
+            })
+            .unwrap();
+
+        let mut app = TuiApp::new(&context, LaunchOptions::default()).unwrap();
+        let selected_index = app
+            .visible_tasks
+            .iter()
+            .position(|entry| entry.task.id == parent.id)
+            .expect("parent should be visible");
+        app.task_list_state.select(Some(selected_index));
+        app.refresh_details(&context).unwrap();
+        app.register_hitbox(
+            Rect::new(0, 0, 8, 1),
+            MouseTarget::SetTaskStatus(TaskStatus::Done),
+        );
+
+        let changed = app
+            .handle_mouse(
+                &context,
+                MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: 0,
+                    row: 0,
+                    modifiers: KeyModifiers::NONE,
+                },
+            )
+            .unwrap();
+
+        let reloaded = context.task_service.load_task(&parent.id).unwrap();
+        let listed = context
+            .task_service
+            .list_tasks(ListTasksQuery {
+                space_ref: Some(space.id.as_str().to_owned()),
+                view: Some(crate::domain::ViewMode::Todo),
+                sort: None,
+                allow_archived_space: false,
+            })
+            .unwrap();
+
+        assert!(changed);
+        assert!(!app.should_quit);
+        assert!(!reloaded.archived);
+        assert!(
+            listed
+                .entries
+                .iter()
+                .any(|entry| entry.task.id == parent.id)
+        );
+        assert!(app.status_message.as_deref().is_some_and(|message| {
+            message.contains("cannot be completed")
+                && message.contains("finish or close every subtask first")
+        }));
     }
 }

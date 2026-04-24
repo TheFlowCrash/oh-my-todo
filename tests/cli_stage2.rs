@@ -21,14 +21,18 @@ fn cli_stage2_core_flow_works_end_to_end() {
         &data_dir,
         ["task", "add", "--parent", parent_id.as_str(), "Warm up"],
     );
+    let child_id = extract_id(&add_child, "tsk_");
     assert!(add_child.contains("Created task"));
 
+    let child_done = run(&data_dir, ["task", "done", child_id.as_str()]);
+    assert!(child_done.contains("to done and archived"));
+
     let done = run(&data_dir, ["task", "done", parent_id.as_str()]);
-    assert!(done.contains("to done"));
+    assert!(done.contains("to done and archived"));
 
     let archive_list = run(&data_dir, ["task", "list", "--view", "archive"]);
     assert!(archive_list.contains("[x] Run 5km"));
-    assert!(!archive_list.contains("Warm up"));
+    assert!(archive_list.contains("[x] Warm up"));
 
     let log = run(
         &data_dir,

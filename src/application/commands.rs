@@ -75,7 +75,6 @@ pub struct ArchiveTaskCommand {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestoreTaskCommand {
     pub task_ref: String,
-    pub status: TaskStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

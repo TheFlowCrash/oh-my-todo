@@ -166,6 +166,16 @@ pub fn dispatch(context: &AppContext, cli: TodoCli) -> Result<(), AppError> {
                 println!("{}", output::format_task_status(&task));
                 launch_tui_if_needed(context, args.tui, Some(task.space_id), None, None)
             }
+            TaskCommand::Close(args) => {
+                let task = context
+                    .task_service
+                    .set_task_status(UpdateTaskStatusCommand {
+                        task_ref: args.task_ref,
+                        status: crate::domain::TaskStatus::Close,
+                    })?;
+                println!("{}", output::format_task_status(&task));
+                launch_tui_if_needed(context, args.tui, Some(task.space_id), None, None)
+            }
             TaskCommand::Archive(args) => {
                 let outcome = context.task_service.archive_task(ArchiveTaskCommand {
                     task_ref: args.task_ref,
@@ -180,10 +190,6 @@ pub fn dispatch(context: &AppContext, cli: TodoCli) -> Result<(), AppError> {
             TaskCommand::Restore(args) => {
                 let outcome = context.task_service.restore_task(RestoreTaskCommand {
                     task_ref: args.task_ref,
-                    status: args
-                        .status
-                        .map(Into::into)
-                        .unwrap_or(crate::domain::TaskStatus::Todo),
                 })?;
                 let task = outcome.root_task.expect("task restore returns task");
                 println!(

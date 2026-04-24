@@ -39,6 +39,7 @@ pub enum TaskCommand {
     Edit(TaskEditArgs),
     Status(TaskStatusArgs),
     Done(TaskDoneArgs),
+    Close(TaskCloseArgs),
     Archive(TaskArchiveArgs),
     Restore(TaskRestoreArgs),
     Log(TaskLogArgs),
@@ -141,6 +142,13 @@ pub struct TaskDoneArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct TaskCloseArgs {
+    pub task_ref: String,
+    #[arg(long)]
+    pub tui: bool,
+}
+
+#[derive(Debug, Args)]
 pub struct TaskArchiveArgs {
     pub task_ref: String,
     #[arg(long)]
@@ -150,8 +158,6 @@ pub struct TaskArchiveArgs {
 #[derive(Debug, Args)]
 pub struct TaskRestoreArgs {
     pub task_ref: String,
-    #[arg(long)]
-    pub status: Option<ActiveTaskStatusArg>,
     #[arg(long)]
     pub tui: bool,
 }
@@ -259,6 +265,7 @@ pub enum ActiveTaskStatusArg {
     #[value(name = "in_progress")]
     InProgress,
     Done,
+    Close,
 }
 
 impl From<ViewArg> for crate::domain::ViewMode {
@@ -288,6 +295,7 @@ impl From<ActiveTaskStatusArg> for crate::domain::TaskStatus {
             ActiveTaskStatusArg::Todo => Self::Todo,
             ActiveTaskStatusArg::InProgress => Self::InProgress,
             ActiveTaskStatusArg::Done => Self::Done,
+            ActiveTaskStatusArg::Close => Self::Close,
         }
     }
 }

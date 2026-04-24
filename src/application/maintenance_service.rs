@@ -2,7 +2,6 @@ use crate::application::error::AppError;
 use crate::application::queries::{DoctorIssue, DoctorReport};
 use crate::domain::{
     PendingOperation, PendingOperationEntry, PendingOperationKind, SpaceId, StateMutation, TaskId,
-    TaskStatus,
 };
 use crate::storage::{AppRepository, TaskBucket};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -66,11 +65,11 @@ impl MaintenanceService {
                 }
             }
 
-            if bucket_mismatches_status(record.bucket, record.task.status) {
+            if bucket_mismatches_status(record.bucket, record.task.archived) {
                 issues.push(DoctorIssue::BucketStatusMismatch {
                     task_id: record.task.id.clone(),
                     bucket: record.bucket,
-                    status: record.task.status,
+                    archived: record.task.archived,
                 });
             }
         }
@@ -153,9 +152,9 @@ impl MaintenanceService {
     }
 }
 
-fn bucket_mismatches_status(bucket: TaskBucket, status: TaskStatus) -> bool {
-    matches!(bucket, TaskBucket::Todo) && status.is_archived()
-        || matches!(bucket, TaskBucket::Archive) && !status.is_archived()
+fn bucket_mismatches_status(bucket: TaskBucket, archived: bool) -> bool {
+    matches!(bucket, TaskBucket::Todo) && archived
+        || matches!(bucket, TaskBucket::Archive) && !archived
 }
 
 fn has_parent_cycle(task_id: &TaskId, tasks_by_id: &HashMap<TaskId, crate::domain::Task>) -> bool {

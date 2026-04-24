@@ -5,11 +5,8 @@ use std::collections::{HashMap, HashSet};
 
 pub fn derive_space_counts(tasks: &[Task]) -> SpaceCounts {
     SpaceCounts {
-        todo_tasks: tasks.iter().filter(|task| task.status.is_active()).count(),
-        archived_tasks: tasks
-            .iter()
-            .filter(|task| task.status.is_archived())
-            .count(),
+        todo_tasks: tasks.iter().filter(|task| !task.archived).count(),
+        archived_tasks: tasks.iter().filter(|task| task.archived).count(),
     }
 }
 
@@ -21,14 +18,14 @@ pub fn build_task_list(
 ) -> TaskListResult {
     let visible_ids = tasks
         .iter()
-        .filter(|task| task.status.is_visible_in_view(view))
+        .filter(|task| task.is_visible_in_view(view))
         .map(|task| task.id.clone())
         .collect::<HashSet<_>>();
 
     let mut children: HashMap<Option<_>, Vec<Task>> = HashMap::new();
     for task in tasks
         .into_iter()
-        .filter(|task| task.status.is_visible_in_view(view))
+        .filter(|task| task.is_visible_in_view(view))
     {
         let parent_key = match task.parent_id.as_ref() {
             Some(parent_id) if visible_ids.contains(parent_id) => Some(parent_id.clone()),
@@ -86,8 +83,10 @@ fn compare_tasks(left: &Task, right: &Task, sort: SortMode) -> Ordering {
             .updated_at
             .cmp(&left.updated_at)
             .then_with(|| left.sort_order.cmp(&right.sort_order)),
-        SortMode::Status => status_rank(left.status)
-            .cmp(&status_rank(right.status))
+        SortMode::Status => left
+            .archived
+            .cmp(&right.archived)
+            .then_with(|| status_rank(left.status).cmp(&status_rank(right.status)))
             .then_with(|| left.sort_order.cmp(&right.sort_order)),
         SortMode::Manual => left.sort_order.cmp(&right.sort_order),
     }
@@ -100,6 +99,6 @@ fn status_rank(status: TaskStatus) -> u8 {
         TaskStatus::Todo => 0,
         TaskStatus::InProgress => 1,
         TaskStatus::Done => 2,
-        TaskStatus::Archived => 3,
+        TaskStatus::Close => 3,
     }
 }
