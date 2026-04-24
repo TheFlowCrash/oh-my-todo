@@ -40,8 +40,11 @@ pub enum AppError {
     SpaceSlugConflict(String),
     #[error("task edit requires at least one change")]
     NoTaskChanges,
-    #[error("task `{task_id}` cannot be completed while child `{child_id}` is still unfinished")]
-    TaskCompletionBlockedByUnfinishedChild { task_id: TaskId, child_id: TaskId },
+    #[error("task `{task_title}` cannot be completed while subtask `{child_title}` is unfinished")]
+    TaskCompletionBlockedByUnfinishedChild {
+        task_title: String,
+        child_title: String,
+    },
     #[error("task `{task_id}` must be archived before `{action}`")]
     TaskMustBeArchived {
         task_id: TaskId,

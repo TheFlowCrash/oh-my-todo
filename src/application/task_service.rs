@@ -250,11 +250,10 @@ impl TaskService {
             );
         }
         if command.status.is_some_and(TaskStatus::is_finished) {
-            if let Some(child_id) = first_unfinished_descendant_id(&updated_tasks, &current_task.id)
-            {
+            if let Some(child) = first_unfinished_descendant(&updated_tasks, &current_task.id) {
                 return Err(AppError::TaskCompletionBlockedByUnfinishedChild {
-                    task_id: current_task.id.clone(),
-                    child_id,
+                    task_title: updated_tasks[root_index].title.clone(),
+                    child_title: child.title.clone(),
                 });
             }
             for task in &mut updated_tasks {
@@ -474,10 +473,10 @@ impl TaskService {
         let root_task = self.resolve_task_from(&all_tasks, reference)?;
 
         if require_finished_descendants {
-            if let Some(child_id) = first_unfinished_descendant_id(&all_tasks, &root_task.id) {
+            if let Some(child) = first_unfinished_descendant(&all_tasks, &root_task.id) {
                 return Err(AppError::TaskCompletionBlockedByUnfinishedChild {
-                    task_id: root_task.id,
-                    child_id,
+                    task_title: root_task.title.clone(),
+                    child_title: child.title.clone(),
                 });
             }
         }
@@ -629,13 +628,12 @@ fn first_archived_ancestor_id(tasks: &[Task], task: &Task) -> Option<TaskId> {
     None
 }
 
-fn first_unfinished_descendant_id(tasks: &[Task], root_id: &TaskId) -> Option<TaskId> {
+fn first_unfinished_descendant<'a>(tasks: &'a [Task], root_id: &TaskId) -> Option<&'a Task> {
     let subtree_ids = collect_subtree_ids(tasks, root_id);
     tasks
         .iter()
         .filter(|task| &task.id != root_id)
         .find(|task| subtree_ids.contains(&task.id) && !task.status.is_finished())
-        .map(|task| task.id.clone())
 }
 
 fn move_direction_label(direction: MoveTaskDirection) -> &'static str {

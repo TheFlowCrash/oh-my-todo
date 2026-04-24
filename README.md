@@ -10,7 +10,7 @@ Local-first terminal task manager built with Rust, Ratatui, Clap, and RON.
 - Phase 5 TUI enhancements:
   - task filter dialog
   - help overlay
-  - active/all space toggle
+  - top-bar space manager popup with active/all toggle
   - TUI space archive/restore/purge
   - manual-sort task reordering with `Move Up` / `Move Down`
 
@@ -38,8 +38,9 @@ todo task list --view all --sort manual
 ## TUI tips
 
 - Click `Filter` in the top bar or press `/` to filter tasks by title, description, logs, or ids
+- Click the `Space: ...` button in the top bar to open the space manager popup
 - Click `Help` in the footer or press `?` to open the in-app guide
-- Use `Active` / `All` in the `Spaces` row to reveal archived spaces
+- Use `Active` / `All` inside the space manager to reveal archived spaces
 - Archived spaces are browsable but read-only until restored
 - When sort mode is `manual`, use `Move Up` / `Move Down` in `Details` to reorder siblings
 - `Ctrl+C` remains the global safe exit

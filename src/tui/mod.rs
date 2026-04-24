@@ -39,7 +39,15 @@ fn run_app(
     let mut app = TuiApp::new(context, options)?;
 
     while !app.should_quit {
+        app.clear_expired_status_message();
         terminal.draw(|frame| render::render(frame, &mut app))?;
+
+        if let Some(timeout) = app.status_message_timeout() {
+            if !event::poll(timeout)? {
+                app.clear_expired_status_message();
+                continue;
+            }
+        }
 
         match event::read()? {
             Event::Key(key) if key.kind == KeyEventKind::Press => {

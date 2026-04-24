@@ -18,6 +18,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use ratatui::layout::{Position, Rect};
 use ratatui::widgets::ListState;
 use std::collections::{HashMap, HashSet};
+use std::time::{Duration, Instant};
+
+const STATUS_MESSAGE_TTL: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub struct VisibleTaskEntry {
@@ -205,6 +208,7 @@ pub struct TuiApp {
     pub details_scroll: usize,
     pub tui_memory: TuiMemory,
     pub status_message: Option<String>,
+    pub status_message_expires_at: Option<Instant>,
     pub hovered_target: Option<MouseTarget>,
     pub ui: UiState,
 }
@@ -250,6 +254,7 @@ impl TuiApp {
             details_scroll: 0,
             tui_memory: state.tui_memory,
             status_message: None,
+            status_message_expires_at: None,
             hovered_target: None,
             ui: UiState::default(),
         };
@@ -549,11 +554,35 @@ impl TuiApp {
         }
     }
 
+    pub fn set_status_message(&mut self, message: impl Into<String>) {
+        self.status_message = Some(message.into());
+        self.status_message_expires_at = Some(Instant::now() + STATUS_MESSAGE_TTL);
+    }
+
+    pub fn clear_status_message(&mut self) {
+        self.status_message = None;
+        self.status_message_expires_at = None;
+    }
+
+    pub fn clear_expired_status_message(&mut self) {
+        if self
+            .status_message_expires_at
+            .is_some_and(|expires_at| Instant::now() >= expires_at)
+        {
+            self.clear_status_message();
+        }
+    }
+
+    pub fn status_message_timeout(&self) -> Option<Duration> {
+        self.status_message_expires_at
+            .map(|expires_at| expires_at.saturating_duration_since(Instant::now()))
+    }
+
     fn handle_interaction_result(&mut self, result: Result<bool, AppError>) -> bool {
         match result {
             Ok(changed) => changed,
             Err(error) => {
-                self.status_message = Some(match error.hint() {
+                self.set_status_message(match error.hint() {
                     Some(hint) => format!("{error} | {hint}"),
                     None => error.to_string(),
                 });
@@ -974,7 +1003,7 @@ impl TuiApp {
 
     fn open_selected_space(&mut self, context: &AppContext) -> Result<bool, AppError> {
         let Some(space) = self.selected_space_summary().cloned() else {
-            self.status_message = Some("Select a space first.".to_owned());
+            self.set_status_message("Select a space first.");
             return Ok(true);
         };
 
@@ -983,9 +1012,9 @@ impl TuiApp {
                 space_ref: space.space.id.as_str().to_owned(),
             })?;
             self.current_space_id = Some(space.space.id.clone());
-            self.status_message = Some(format!("Switched to space {}.", space.space.name));
+            self.set_status_message(format!("Switched to space {}.", space.space.name));
         } else {
-            self.status_message = Some(format!("Viewing archived space {}.", space.space.name));
+            self.set_status_message(format!("Viewing archived space {}.", space.space.name));
         }
 
         self.viewed_space_id = Some(space.space.id.clone());
@@ -1021,15 +1050,16 @@ impl TuiApp {
                 name: TextInput::single_line(space.1),
             })));
         } else {
-            self.status_message = Some("No space selected to rename.".to_owned());
+            self.set_status_message("No space selected to rename.");
         }
     }
 
     fn open_purge_space_confirm(&mut self) {
         if let Some(space) = self.selected_space_summary().cloned() {
             if !space.space.state.is_archived() {
-                self.status_message =
-                    Some("Only archived spaces can be purged. Archive the space first.".to_owned());
+                self.set_status_message(
+                    "Only archived spaces can be purged. Archive the space first.",
+                );
                 return;
             }
 
@@ -1042,14 +1072,13 @@ impl TuiApp {
                 },
             )));
         } else {
-            self.status_message = Some("Select a space first to purge it.".to_owned());
+            self.set_status_message("Select a space first to purge it.");
         }
     }
 
     fn open_task_form_create_root(&mut self) {
         if !self.can_mutate_viewed_space() {
-            self.status_message =
-                Some("Restore this space before creating new tasks inside it.".to_owned());
+            self.set_status_message("Restore this space before creating new tasks inside it.");
             return;
         }
         self.enter_root_overlay(Mode::Form(FormModal::Task(TaskFormState {
@@ -1063,8 +1092,7 @@ impl TuiApp {
 
     fn open_task_form_create_child(&mut self) {
         if !self.can_mutate_viewed_space() {
-            self.status_message =
-                Some("Restore this space before creating new tasks inside it.".to_owned());
+            self.set_status_message("Restore this space before creating new tasks inside it.");
             return;
         }
         if let Some(task_id) = self.selected_task_id() {
@@ -1081,14 +1109,13 @@ impl TuiApp {
                 status: TaskStatus::Todo,
             })));
         } else {
-            self.status_message = Some("Select a task first to create a subtask.".to_owned());
+            self.set_status_message("Select a task first to create a subtask.");
         }
     }
 
     fn open_task_form_edit(&mut self) {
         if !self.can_mutate_viewed_space() {
-            self.status_message =
-                Some("Restore this space before editing tasks inside it.".to_owned());
+            self.set_status_message("Restore this space before editing tasks inside it.");
             return;
         }
         if let Some(details) = self.details.as_ref() {
@@ -1104,14 +1131,13 @@ impl TuiApp {
                 status: details.task.status,
             })));
         } else {
-            self.status_message = Some("Select a task first to edit it.".to_owned());
+            self.set_status_message("Select a task first to edit it.");
         }
     }
 
     fn open_log_form(&mut self) {
         if !self.can_mutate_viewed_space() {
-            self.status_message =
-                Some("Restore this space before adding logs inside it.".to_owned());
+            self.set_status_message("Restore this space before adding logs inside it.");
             return;
         }
         if let Some(details) = self.details.as_ref() {
@@ -1121,14 +1147,13 @@ impl TuiApp {
                 input: TextInput::multiline(""),
             })));
         } else {
-            self.status_message = Some("Select a task first to add a log.".to_owned());
+            self.set_status_message("Select a task first to add a log.");
         }
     }
 
     fn open_purge_confirm(&mut self, _context: &AppContext) -> Result<(), AppError> {
         if !self.can_mutate_viewed_space() {
-            self.status_message =
-                Some("Restore this space before purging tasks inside it.".to_owned());
+            self.set_status_message("Restore this space before purging tasks inside it.");
             return Ok(());
         }
 
@@ -1140,8 +1165,9 @@ impl TuiApp {
             )
         }) {
             if !archived {
-                self.status_message =
-                    Some("Only archived tasks can be purged. Archive the task first.".to_owned());
+                self.set_status_message(
+                    "Only archived tasks can be purged. Archive the task first.",
+                );
                 return Ok(());
             }
             let affected_count = self.subtree_count(&task_id);
@@ -1155,7 +1181,7 @@ impl TuiApp {
                 },
             )));
         } else {
-            self.status_message = Some("Select a task first to purge it.".to_owned());
+            self.set_status_message("Select a task first to purge it.");
         }
         Ok(())
     }
@@ -1176,14 +1202,14 @@ impl TuiApp {
                 self.current_space_id = Some(created.id.clone());
                 self.viewed_space_id = Some(created.id.clone());
                 self.space_index = usize::MAX;
-                self.status_message = Some(format!("Created space {}.", created.name));
+                self.set_status_message(format!("Created space {}.", created.name));
             }
             SpaceFormMode::Rename { space_id } => {
                 let renamed = context.space_service.rename_space(RenameSpaceCommand {
                     space_ref: space_id.as_str().to_owned(),
                     new_name: form.name.value(),
                 })?;
-                self.status_message = Some(format!("Renamed space to {}.", renamed.name));
+                self.set_status_message(format!("Renamed space to {}.", renamed.name));
             }
         }
 
@@ -1209,7 +1235,7 @@ impl TuiApp {
                     status: form.status,
                 })?;
                 self.select_task_after_action(created.id.clone());
-                self.status_message = Some(format!("Created task {}.", created.title));
+                self.set_status_message(format!("Created task {}.", created.title));
             }
             TaskFormMode::CreateChild { parent_id } => {
                 let created = context.task_service.create_task(CreateTaskCommand {
@@ -1221,7 +1247,7 @@ impl TuiApp {
                 })?;
                 self.expand_task(parent_id);
                 self.select_task_after_action(created.id.clone());
-                self.status_message = Some(format!("Created task {}.", created.title));
+                self.set_status_message(format!("Created task {}.", created.title));
             }
             TaskFormMode::Edit { task_id } => {
                 let updated = context.task_service.edit_task(EditTaskCommand {
@@ -1235,7 +1261,7 @@ impl TuiApp {
                     space_ref: None,
                 })?;
                 self.select_task_after_action(updated.id.clone());
-                self.status_message = Some(format!("Updated task {}.", updated.title));
+                self.set_status_message(format!("Updated task {}.", updated.title));
             }
         }
 
@@ -1254,7 +1280,7 @@ impl TuiApp {
             message: form.input.value(),
         })?;
         self.select_task_after_action(updated.id.clone());
-        self.status_message = Some(format!("Added log to {}.", updated.title));
+        self.set_status_message(format!("Added log to {}.", updated.title));
         self.close_modal(true);
         self.reload(context)?;
         Ok(())
@@ -1266,7 +1292,7 @@ impl TuiApp {
         confirm: PurgeTaskConfirmState,
     ) -> Result<(), AppError> {
         if confirm.requires_phrase && confirm.phrase.value().trim() != "purge" {
-            self.status_message = Some("Type `purge` to confirm this deletion.".to_owned());
+            self.set_status_message("Type `purge` to confirm this deletion.");
             self.mode = Mode::Confirm(ConfirmModal::PurgeTask(confirm));
             return Ok(());
         }
@@ -1275,7 +1301,7 @@ impl TuiApp {
             task_ref: confirm.task_id.as_str().to_owned(),
             recursive: confirm.affected_count > 1,
         })?;
-        self.status_message = Some(format!("Purged {} task(s).", purged.affected_count));
+        self.set_status_message(format!("Purged {} task(s).", purged.affected_count));
         self.close_modal(true);
         self.reload(context)?;
         Ok(())
@@ -1287,7 +1313,7 @@ impl TuiApp {
         confirm: PurgeSpaceConfirmState,
     ) -> Result<(), AppError> {
         if confirm.phrase.value().trim() != "purge" {
-            self.status_message = Some("Type `purge` to confirm this deletion.".to_owned());
+            self.set_status_message("Type `purge` to confirm this deletion.");
             self.mode = Mode::Confirm(ConfirmModal::PurgeSpace(confirm));
             return Ok(());
         }
@@ -1295,7 +1321,7 @@ impl TuiApp {
         context.space_service.purge_space(PurgeSpaceCommand {
             space_ref: confirm.space_id.as_str().to_owned(),
         })?;
-        self.status_message = Some(format!("Purged space {}.", confirm.space_name));
+        self.set_status_message(format!("Purged space {}.", confirm.space_name));
         self.close_modal(true);
         self.reload(context)?;
         Ok(())
@@ -1303,11 +1329,11 @@ impl TuiApp {
 
     fn submit_filter(&mut self, context: &AppContext, filter: FilterState) -> Result<(), AppError> {
         self.task_filter = filter.input.value().trim().to_owned();
-        self.status_message = if self.task_filter.is_empty() {
-            Some("Cleared task filter.".to_owned())
+        self.set_status_message(if self.task_filter.is_empty() {
+            "Cleared task filter.".to_owned()
         } else {
-            Some(format!("Applied filter: {}.", self.task_filter))
-        };
+            format!("Applied filter: {}.", self.task_filter)
+        });
         self.close_modal(false);
         self.reload(context)?;
         Ok(())
@@ -1315,7 +1341,7 @@ impl TuiApp {
 
     fn clear_filter(&mut self, context: &AppContext) -> Result<(), AppError> {
         self.task_filter.clear();
-        self.status_message = Some("Cleared task filter.".to_owned());
+        self.set_status_message("Cleared task filter.");
         self.close_modal(false);
         self.reload(context)?;
         Ok(())
@@ -1372,13 +1398,12 @@ impl TuiApp {
         status: TaskStatus,
     ) -> Result<bool, AppError> {
         if !self.can_mutate_viewed_space() {
-            self.status_message =
-                Some("Restore this space before changing task status inside it.".to_owned());
+            self.set_status_message("Restore this space before changing task status inside it.");
             return Ok(true);
         }
 
         let Some(task_id) = self.selected_task_id() else {
-            self.status_message = Some("Select a task first.".to_owned());
+            self.set_status_message("Select a task first.");
             return Ok(true);
         };
 
@@ -1389,7 +1414,7 @@ impl TuiApp {
                 status,
             })?;
         self.select_task_after_action(updated.id.clone());
-        self.status_message = Some(if updated.archived && status.is_finished() {
+        self.set_status_message(if updated.archived && status.is_finished() {
             format!("Archived {} as {}.", updated.title, status_label(status))
         } else {
             format!("Set {} to {}.", updated.title, status_label(status))
@@ -1400,13 +1425,12 @@ impl TuiApp {
 
     fn restore_selected_task(&mut self, context: &AppContext) -> Result<bool, AppError> {
         if !self.can_mutate_viewed_space() {
-            self.status_message =
-                Some("Restore this space before restoring tasks inside it.".to_owned());
+            self.set_status_message("Restore this space before restoring tasks inside it.");
             return Ok(true);
         }
 
         let Some(task_id) = self.selected_task_id() else {
-            self.status_message = Some("Select a task first.".to_owned());
+            self.set_status_message("Select a task first.");
             return Ok(true);
         };
 
@@ -1415,7 +1439,7 @@ impl TuiApp {
         })?;
         if let Some(task) = outcome.root_task {
             self.select_task_after_action(task.id);
-            self.status_message = Some(format!("Restored {} task(s).", outcome.affected_count));
+            self.set_status_message(format!("Restored {} task(s).", outcome.affected_count));
         }
         self.reload(context)?;
         Ok(true)
@@ -1423,38 +1447,38 @@ impl TuiApp {
 
     fn archive_selected_space(&mut self, context: &AppContext) -> Result<bool, AppError> {
         let Some(space) = self.selected_space_summary().cloned() else {
-            self.status_message = Some("Select a space first.".to_owned());
+            self.set_status_message("Select a space first.");
             return Ok(true);
         };
 
         if space.space.state.is_archived() {
-            self.status_message = Some("That space is already archived.".to_owned());
+            self.set_status_message("That space is already archived.");
             return Ok(true);
         }
 
         context.space_service.archive_space(ArchiveSpaceCommand {
             space_ref: space.space.id.as_str().to_owned(),
         })?;
-        self.status_message = Some(format!("Archived space {}.", space.space.name));
+        self.set_status_message(format!("Archived space {}.", space.space.name));
         self.reload(context)?;
         Ok(true)
     }
 
     fn restore_selected_space(&mut self, context: &AppContext) -> Result<bool, AppError> {
         let Some(space) = self.selected_space_summary().cloned() else {
-            self.status_message = Some("Select a space first.".to_owned());
+            self.set_status_message("Select a space first.");
             return Ok(true);
         };
 
         if space.space.state.is_active() {
-            self.status_message = Some("That space is already active.".to_owned());
+            self.set_status_message("That space is already active.");
             return Ok(true);
         }
 
         context.space_service.restore_space(RestoreSpaceCommand {
             space_ref: space.space.id.as_str().to_owned(),
         })?;
-        self.status_message = Some(format!("Restored space {}.", space.space.name));
+        self.set_status_message(format!("Restored space {}.", space.space.name));
         self.reload(context)?;
         Ok(true)
     }
@@ -1465,17 +1489,16 @@ impl TuiApp {
         direction: MoveTaskDirection,
     ) -> Result<bool, AppError> {
         if !self.can_mutate_viewed_space() {
-            self.status_message =
-                Some("Restore this space before reordering tasks inside it.".to_owned());
+            self.set_status_message("Restore this space before reordering tasks inside it.");
             return Ok(true);
         }
         if self.current_sort != SortMode::Manual {
-            self.status_message = Some("Switch to manual sort before reordering tasks.".to_owned());
+            self.set_status_message("Switch to manual sort before reordering tasks.");
             return Ok(true);
         }
 
         let Some(task_id) = self.selected_task_id() else {
-            self.status_message = Some("Select a task first.".to_owned());
+            self.set_status_message("Select a task first.");
             return Ok(true);
         };
 
@@ -1484,7 +1507,7 @@ impl TuiApp {
             direction,
         })?;
         self.select_task_after_action(moved.id.clone());
-        self.status_message = Some(format!(
+        self.set_status_message(format!(
             "Moved {} {}.",
             moved.title,
             match direction {
@@ -1568,6 +1591,7 @@ impl TuiApp {
     }
 
     fn refresh_details(&mut self, context: &AppContext) -> Result<(), AppError> {
+        let previous_task_id = self.details.as_ref().map(|details| details.task.id.clone());
         self.details = match self.selected_task_id() {
             Some(task_id) => Some(context.task_service.show_task(
                 crate::application::queries::ShowTaskQuery {
@@ -1576,6 +1600,10 @@ impl TuiApp {
             )?),
             None => None,
         };
+        let next_task_id = self.details.as_ref().map(|details| details.task.id.clone());
+        if previous_task_id != next_task_id {
+            self.details_scroll = 0;
+        }
         Ok(())
     }
 
@@ -1946,6 +1974,7 @@ mod tests {
     };
     use ratatui::layout::Rect;
     use std::collections::HashSet;
+    use std::time::{Duration, Instant};
     use tempfile::tempdir;
 
     #[test]
@@ -2204,5 +2233,89 @@ mod tests {
             message.contains("cannot be completed")
                 && message.contains("finish or close every subtask first")
         }));
+    }
+
+    #[test]
+    fn status_message_expires_after_timeout() {
+        let temp_dir = tempdir().unwrap();
+        let context = bootstrap(BootstrapOptions {
+            data_root: Some(temp_dir.path().join("app_data")),
+        })
+        .unwrap();
+        let mut app = TuiApp::new(&context, LaunchOptions::default()).unwrap();
+
+        app.set_status_message("Saved");
+        app.status_message_expires_at = Some(Instant::now() - Duration::from_millis(1));
+        app.clear_expired_status_message();
+
+        assert!(app.status_message.is_none());
+        assert!(app.status_message_expires_at.is_none());
+    }
+
+    #[test]
+    fn switching_selected_task_resets_detail_scroll() {
+        let temp_dir = tempdir().unwrap();
+        let context = bootstrap(BootstrapOptions {
+            data_root: Some(temp_dir.path().join("app_data")),
+        })
+        .unwrap();
+
+        let space = context
+            .space_service
+            .create_space(CreateSpaceCommand {
+                name: "Personal".to_owned(),
+            })
+            .unwrap();
+        context
+            .space_service
+            .use_space(SetCurrentSpaceCommand {
+                space_ref: space.id.as_str().to_owned(),
+            })
+            .unwrap();
+
+        context
+            .task_service
+            .create_task(CreateTaskCommand {
+                title: "First".to_owned(),
+                space_ref: None,
+                description: Some("line 1\nline 2\nline 3\nline 4\nline 5".to_owned()),
+                parent_ref: None,
+                status: TaskStatus::Todo,
+            })
+            .unwrap();
+        let second = context
+            .task_service
+            .create_task(CreateTaskCommand {
+                title: "Second".to_owned(),
+                space_ref: None,
+                description: Some("short".to_owned()),
+                parent_ref: None,
+                status: TaskStatus::Todo,
+            })
+            .unwrap();
+
+        let mut app = TuiApp::new(&context, LaunchOptions::default()).unwrap();
+        let first_index = app
+            .visible_tasks
+            .iter()
+            .position(|entry| entry.task.title == "First")
+            .expect("first task should be visible");
+        app.task_list_state.select(Some(first_index));
+        app.refresh_details(&context).unwrap();
+        app.details_scroll = 4;
+        let second_index = app
+            .visible_tasks
+            .iter()
+            .position(|entry| entry.task.id == second.id)
+            .expect("second task should be visible");
+        app.task_list_state.select(Some(second_index));
+
+        app.refresh_details(&context).unwrap();
+
+        assert_eq!(
+            app.details.as_ref().map(|details| &details.task.id),
+            Some(&second.id)
+        );
+        assert_eq!(app.details_scroll, 0);
     }
 }

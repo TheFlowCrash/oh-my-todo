@@ -3,23 +3,32 @@ use crate::tui::app::{
     ConfirmModal, FormModal, Mode, MouseTarget, SpaceFormMode, TaskFormField, TaskFormMode, TuiApp,
 };
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 
-const ACCENT: Color = Color::Cyan;
-const PANEL_BG: Color = Color::Rgb(20, 24, 28);
-const SUBTLE_BG: Color = Color::Rgb(32, 38, 44);
-const HOVER_BG: Color = Color::Rgb(48, 58, 68);
-const BORDER: Color = Color::Rgb(85, 98, 110);
-const TEXT: Color = Color::Rgb(224, 228, 232);
-const MUTED: Color = Color::Rgb(145, 155, 165);
-const DANGER: Color = Color::Rgb(220, 90, 90);
+const ACCENT: Color = Color::Rgb(138, 211, 208);
+const SCREEN_BG: Color = Color::Rgb(22, 25, 29);
+const HEADER_BG: Color = Color::Rgb(36, 41, 46);
+const PANEL_BG: Color = Color::Rgb(30, 34, 39);
+const SUBTLE_BG: Color = Color::Rgb(44, 49, 55);
+const HOVER_BG: Color = Color::Rgb(58, 66, 74);
+const BORDER: Color = Color::Rgb(118, 129, 140);
+const TEXT: Color = Color::Rgb(236, 239, 242);
+const MUTED: Color = Color::Rgb(172, 180, 188);
+const DANGER: Color = Color::Rgb(224, 108, 108);
 
 pub fn render(frame: &mut Frame, app: &mut TuiApp) {
     app.begin_frame();
-    let area = frame.area();
+    frame.render_widget(
+        Paragraph::new("").style(Style::default().bg(SCREEN_BG)),
+        frame.area(),
+    );
+    let area = inset_rect(frame.area(), 1, 1);
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
     app.set_frame_area(area);
     let layout = Layout::vertical([
         Constraint::Length(3),
@@ -54,15 +63,15 @@ pub fn render(frame: &mut Frame, app: &mut TuiApp) {
 }
 
 fn render_status_bar(frame: &mut Frame, area: Rect, app: &mut TuiApp) {
-    let block = panel_block("oh-my-todo", false);
+    let block = header_block();
     frame.render_widget(block.clone(), area);
     let inner = block.inner(area);
     if inner.width == 0 || inner.height == 0 {
         return;
     }
 
-    let layout = Layout::horizontal([Constraint::Min(24), Constraint::Length(21)]);
-    let [meta_area, tabs_area] = inner.layout(&layout);
+    let content_layout = Layout::horizontal([Constraint::Min(24), Constraint::Length(21)]);
+    let [meta_area, tabs_area] = inner.layout(&content_layout);
     render_header_links(frame, meta_area, app);
     render_view_tabs(frame, tabs_area, app);
 }
@@ -115,7 +124,7 @@ fn render_header_links(frame: &mut Frame, area: Rect, app: &mut TuiApp) {
     }
 
     frame.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(PANEL_BG)),
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(HEADER_BG)),
         area,
     );
 }
@@ -186,7 +195,7 @@ fn render_view_tabs(frame: &mut Frame, area: Rect, app: &mut TuiApp) {
     frame.render_widget(
         Paragraph::new(Line::from(spans))
             .alignment(Alignment::Right)
-            .style(Style::default().bg(PANEL_BG)),
+            .style(Style::default().bg(HEADER_BG)),
         draw_area,
     );
 }
@@ -500,7 +509,7 @@ fn render_wide_body(frame: &mut Frame, area: Rect, app: &mut TuiApp) {
     ]);
     let [top_area, _, detail_area] = inner.layout(&layout);
     let row_layout = Layout::horizontal([
-        Constraint::Fill(5),
+        Constraint::Fill(4),
         Constraint::Length(1),
         Constraint::Fill(3),
     ]);
@@ -651,7 +660,7 @@ fn render_detail_panel(frame: &mut Frame, area: Rect, app: &mut TuiApp, focused:
     }
 
     app.set_details_viewport(inner);
-    let text = if let Some(details) = app.details.as_ref() {
+    let lines = if let Some(details) = app.details.as_ref() {
         let logs = if details.logs.is_empty() {
             vec![Line::from(Span::styled("-", Style::default().fg(MUTED)))]
         } else {
@@ -690,7 +699,7 @@ fn render_detail_panel(frame: &mut Frame, area: Rect, app: &mut TuiApp, focused:
             )),
         ]);
         lines.extend(logs);
-        Text::from(lines)
+        lines
     } else {
         let mut lines = vec![Line::from(Span::styled(
             "Select a task to view details.",
@@ -713,12 +722,16 @@ fn render_detail_panel(frame: &mut Frame, area: Rect, app: &mut TuiApp, focused:
                 Style::default().fg(MUTED),
             )));
         }
-        Text::from(lines)
+        lines
     };
 
+    let viewport_height = inner.height as usize;
+    let max_scroll = lines.len().saturating_sub(viewport_height);
+    app.details_scroll = app.details_scroll.min(max_scroll);
+
     frame.render_widget(
-        Paragraph::new(text)
-            .scroll((app.details_scroll.min(10_000) as u16, 0))
+        Paragraph::new(Text::from(lines))
+            .scroll((app.details_scroll as u16, 0))
             .style(Style::default().fg(TEXT))
             .wrap(Wrap { trim: false }),
         inner,
@@ -735,91 +748,169 @@ fn render_details_toolbar(frame: &mut Frame, area: Rect, app: &mut TuiApp, narro
     let can_restore = selected_archived && can_mutate;
     let can_purge = selected_archived && can_mutate;
     let can_status = selected.is_some() && can_mutate && !selected_archived;
-    let can_reorder = can_edit_task && app.current_sort == crate::domain::SortMode::Manual;
+    let show_arrange = app.current_sort == crate::domain::SortMode::Manual;
+    let can_reorder = can_edit_task && show_arrange;
 
-    let rows = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Min(0),
-    ]);
-    let [
-        actions_header,
-        actions_row_one,
-        actions_row_two,
-        workflow_header,
-        workflow_row_one,
-        workflow_row_two,
-        arrange_header,
-        arrange_row,
-        _,
-    ] = area.layout(&rows);
-
-    render_section_rule(frame, actions_header, "Actions");
     if narrow {
-        render_link_buttons(
-            frame,
-            app,
-            actions_row_one,
-            &[
-                ("Back", MouseTarget::CloseDetails, false, true, false),
-                ("+ Task", MouseTarget::CreateTask, false, can_create, false),
-            ],
-        );
-        render_link_buttons(
-            frame,
-            app,
-            actions_row_two,
-            &[
-                (
-                    "+ Subtask",
-                    MouseTarget::CreateSubtask,
-                    false,
-                    can_edit_task,
-                    false,
-                ),
-                ("Edit", MouseTarget::EditTask, false, can_edit_task, false),
-                ("Log", MouseTarget::AddLog, false, can_edit_task, false),
-            ],
-        );
-    } else {
-        render_link_buttons(
-            frame,
-            app,
-            actions_row_one,
-            &[
-                ("+ Task", MouseTarget::CreateTask, false, can_create, false),
-                (
-                    "+ Subtask",
-                    MouseTarget::CreateSubtask,
-                    false,
-                    can_edit_task,
-                    false,
-                ),
-            ],
-        );
-        render_link_buttons(
-            frame,
-            app,
-            actions_row_two,
-            &[
-                ("Edit", MouseTarget::EditTask, false, can_edit_task, false),
-                ("Log", MouseTarget::AddLog, false, can_edit_task, false),
-            ],
-        );
-    }
+        let rows = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(if show_arrange { 1 } else { 0 }),
+            Constraint::Length(if show_arrange { 1 } else { 0 }),
+            Constraint::Min(0),
+        ]);
+        let [
+            back_row,
+            actions_header,
+            actions_row,
+            actions_gap,
+            workflow_header,
+            workflow_row,
+            workflow_gap,
+            arrange_header,
+            arrange_row,
+            _,
+        ] = area.layout(&rows);
 
-    render_section_rule(frame, workflow_header, "Workflow");
+        render_link_buttons(
+            frame,
+            app,
+            back_row,
+            &[("Back", MouseTarget::CloseDetails, false, true, false)],
+        );
+        render_section_rule(frame, actions_header, "Actions");
+        render_link_buttons(
+            frame,
+            app,
+            actions_row,
+            &[
+                ("+ Task", MouseTarget::CreateTask, false, can_create, false),
+                (
+                    "+ Subtask",
+                    MouseTarget::CreateSubtask,
+                    false,
+                    can_edit_task,
+                    false,
+                ),
+                ("Edit", MouseTarget::EditTask, false, can_edit_task, false),
+                ("Log", MouseTarget::AddLog, false, can_edit_task, false),
+            ],
+        );
+        frame.render_widget(
+            Paragraph::new("").style(Style::default().bg(PANEL_BG)),
+            actions_gap,
+        );
+
+        render_section_rule(frame, workflow_header, "Workflow");
+        render_workflow_buttons(
+            frame,
+            app,
+            workflow_row,
+            selected_archived,
+            selected_status,
+            can_restore,
+            can_purge,
+            can_status,
+        );
+        frame.render_widget(
+            Paragraph::new("").style(Style::default().bg(PANEL_BG)),
+            workflow_gap,
+        );
+
+        if show_arrange {
+            render_section_rule(frame, arrange_header, "Arrange");
+            render_arrange_buttons(frame, app, arrange_row, can_reorder);
+        }
+    } else {
+        let rows = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(if show_arrange { 1 } else { 0 }),
+            Constraint::Length(if show_arrange { 1 } else { 0 }),
+            Constraint::Min(0),
+        ]);
+        let [
+            actions_header,
+            actions_row,
+            actions_gap,
+            workflow_header,
+            workflow_row,
+            workflow_gap,
+            arrange_header,
+            arrange_row,
+            _,
+        ] = area.layout(&rows);
+
+        render_section_rule(frame, actions_header, "Actions");
+        render_link_buttons(
+            frame,
+            app,
+            actions_row,
+            &[
+                ("+ Task", MouseTarget::CreateTask, false, can_create, false),
+                (
+                    "+ Subtask",
+                    MouseTarget::CreateSubtask,
+                    false,
+                    can_edit_task,
+                    false,
+                ),
+                ("Edit", MouseTarget::EditTask, false, can_edit_task, false),
+                ("Log", MouseTarget::AddLog, false, can_edit_task, false),
+            ],
+        );
+        frame.render_widget(
+            Paragraph::new("").style(Style::default().bg(PANEL_BG)),
+            actions_gap,
+        );
+
+        render_section_rule(frame, workflow_header, "Workflow");
+        render_workflow_buttons(
+            frame,
+            app,
+            workflow_row,
+            selected_archived,
+            selected_status,
+            can_restore,
+            can_purge,
+            can_status,
+        );
+        frame.render_widget(
+            Paragraph::new("").style(Style::default().bg(PANEL_BG)),
+            workflow_gap,
+        );
+
+        if show_arrange {
+            render_section_rule(frame, arrange_header, "Arrange");
+            render_arrange_buttons(frame, app, arrange_row, can_reorder);
+        }
+    }
+}
+
+fn render_workflow_buttons(
+    frame: &mut Frame,
+    app: &mut TuiApp,
+    area: Rect,
+    selected_archived: bool,
+    selected_status: Option<TaskStatus>,
+    can_restore: bool,
+    can_purge: bool,
+    can_status: bool,
+) {
     if selected_archived {
         render_link_buttons(
             frame,
             app,
-            workflow_row_one,
+            area,
             &[
                 (
                     "Restore",
@@ -831,15 +922,11 @@ fn render_details_toolbar(frame: &mut Frame, area: Rect, app: &mut TuiApp, narro
                 ("Purge", MouseTarget::OpenPurgeTask, false, can_purge, true),
             ],
         );
-        frame.render_widget(
-            Paragraph::new("").style(Style::default().bg(PANEL_BG)),
-            workflow_row_two,
-        );
     } else {
         render_link_buttons(
             frame,
             app,
-            workflow_row_one,
+            area,
             &[
                 (
                     "Todo",
@@ -855,13 +942,6 @@ fn render_details_toolbar(frame: &mut Frame, area: Rect, app: &mut TuiApp, narro
                     can_status,
                     false,
                 ),
-            ],
-        );
-        render_link_buttons(
-            frame,
-            app,
-            workflow_row_two,
-            &[
                 (
                     "Done",
                     MouseTarget::SetTaskStatus(TaskStatus::Done),
@@ -879,12 +959,13 @@ fn render_details_toolbar(frame: &mut Frame, area: Rect, app: &mut TuiApp, narro
             ],
         );
     }
+}
 
-    render_section_rule(frame, arrange_header, "Arrange");
+fn render_arrange_buttons(frame: &mut Frame, app: &mut TuiApp, area: Rect, can_reorder: bool) {
     render_link_buttons(
         frame,
         app,
-        arrange_row,
+        area,
         &[
             (
                 "Move Up",
@@ -909,7 +990,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &mut TuiApp) {
         .status_message
         .clone()
         .unwrap_or_else(|| app.help_text());
-    let prefix = "└─ ";
+    let prefix = "╰─ ";
     let help_label = "[Help]";
     let prefix_width = prefix.chars().count();
     let help_width = help_label.chars().count();
@@ -920,8 +1001,8 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &mut TuiApp) {
     let tail_width = body_width.saturating_sub(prefix_width + message_width + 1 + help_width);
     let tail = match tail_width {
         0 => String::new(),
-        1 => "┘".to_owned(),
-        _ => format!(" {}┘", "─".repeat(tail_width - 2)),
+        1 => "╯".to_owned(),
+        _ => format!(" {}╯", "─".repeat(tail_width - 2)),
     };
     let help_target = MouseTarget::OpenHelp;
     let help_style = if matches!(&app.mode, Mode::Help) {
@@ -945,7 +1026,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &mut TuiApp) {
             Span::styled(help_label, help_style),
             Span::styled(tail, Style::default().fg(BORDER)),
         ]))
-        .style(Style::default().bg(PANEL_BG)),
+        .style(Style::default().bg(SCREEN_BG)),
         area,
     );
 
@@ -971,7 +1052,7 @@ fn render_space_form(
 ) {
     let popup = centered_rect(area, 58, 28);
     frame.render_widget(Clear, popup);
-    let block = Block::bordered()
+    let block = rounded_block()
         .title(match form.mode {
             SpaceFormMode::Create => "New Space",
             SpaceFormMode::Rename { .. } => "Rename Space",
@@ -1001,7 +1082,6 @@ fn render_space_form(
             .style(Style::default().fg(MUTED)),
         hint_area,
     );
-    set_input_cursor(frame, input_area, &form.name);
 }
 
 fn render_task_form(
@@ -1017,7 +1097,7 @@ fn render_task_form(
         TaskFormMode::CreateChild { .. } => "New Subtask",
         TaskFormMode::Edit { .. } => "Edit Task",
     };
-    let block = Block::bordered()
+    let block = rounded_block()
         .title(title)
         .style(Style::default().bg(PANEL_BG).fg(TEXT));
     frame.render_widget(block.clone(), popup);
@@ -1071,14 +1151,6 @@ fn render_task_form(
             .style(Style::default().fg(MUTED)),
         hint_area,
     );
-
-    match form.focus {
-        TaskFormField::Title => set_input_cursor(frame, title_area, &form.title),
-        TaskFormField::Description => {
-            set_text_area_cursor(frame, description_area, &form.description)
-        }
-        TaskFormField::Status => {}
-    }
 }
 
 fn render_log_form(
@@ -1089,7 +1161,7 @@ fn render_log_form(
 ) {
     let popup = centered_rect(area, 76, 66);
     frame.render_widget(Clear, popup);
-    let block = Block::bordered()
+    let block = rounded_block()
         .title(format!("Add Log: {}", form.task_title))
         .style(Style::default().bg(PANEL_BG).fg(TEXT));
     frame.render_widget(block.clone(), popup);
@@ -1116,7 +1188,6 @@ fn render_log_form(
             .style(Style::default().fg(MUTED)),
         hint_area,
     );
-    set_text_area_cursor(frame, input_area, &form.input);
 }
 
 fn render_purge_confirm(
@@ -1127,7 +1198,7 @@ fn render_purge_confirm(
 ) {
     let popup = centered_rect(area, 62, 38);
     frame.render_widget(Clear, popup);
-    let block = Block::bordered()
+    let block = rounded_block()
         .title("Purge Task")
         .style(Style::default().bg(PANEL_BG).fg(TEXT));
     frame.render_widget(block.clone(), popup);
@@ -1161,7 +1232,6 @@ fn render_purge_confirm(
     if confirm.requires_phrase {
         render_input_field(frame, phrase_area, "Type purge", &confirm.phrase, true);
         app.register_hitbox(phrase_area, MouseTarget::ConfirmPhraseInput);
-        set_input_cursor(frame, phrase_area, &confirm.phrase);
     }
 
     render_button_row(
@@ -1188,7 +1258,7 @@ fn render_space_purge_confirm(
 ) {
     let popup = centered_rect(area, 66, 42);
     frame.render_widget(Clear, popup);
-    let block = Block::bordered()
+    let block = rounded_block()
         .title("Purge Space")
         .style(Style::default().bg(PANEL_BG).fg(TEXT));
     frame.render_widget(block.clone(), popup);
@@ -1215,7 +1285,6 @@ fn render_space_purge_confirm(
     );
     render_input_field(frame, phrase_area, "Type purge", &confirm.phrase, true);
     app.register_hitbox(phrase_area, MouseTarget::ConfirmPhraseInput);
-    set_input_cursor(frame, phrase_area, &confirm.phrase);
     render_button_row(
         frame,
         app,
@@ -1240,7 +1309,7 @@ fn render_filter_form(
 ) {
     let popup = centered_rect(area, 62, 30);
     frame.render_widget(Clear, popup);
-    let block = Block::bordered()
+    let block = rounded_block()
         .title("Filter Tasks")
         .style(Style::default().bg(PANEL_BG).fg(TEXT));
     frame.render_widget(block.clone(), popup);
@@ -1270,13 +1339,12 @@ fn render_filter_form(
         .style(Style::default().fg(MUTED)),
         hint_area,
     );
-    set_input_cursor(frame, input_area, &filter.input);
 }
 
 fn render_help_overlay(frame: &mut Frame, area: Rect, app: &mut TuiApp) {
     let popup = centered_rect(area, 74, 64);
     frame.render_widget(Clear, popup);
-    let block = Block::bordered()
+    let block = rounded_block()
         .title("Help")
         .style(Style::default().bg(PANEL_BG).fg(TEXT));
     frame.render_widget(block.clone(), popup);
@@ -1321,7 +1389,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect, app: &mut TuiApp) {
 }
 
 fn render_status_picker(frame: &mut Frame, area: Rect, app: &mut TuiApp, status: TaskStatus) {
-    let block = Block::bordered()
+    let block = rounded_block()
         .title("Status")
         .style(Style::default().bg(PANEL_BG).fg(TEXT));
     frame.render_widget(block.clone(), area);
@@ -1546,61 +1614,70 @@ fn render_button(
 fn render_input_field(
     frame: &mut Frame,
     area: Rect,
-    label: &str,
+    label: &'static str,
     input: &crate::tui::input::TextInput,
     focused: bool,
 ) {
-    let block = Block::bordered()
+    let block = rounded_block()
         .title(label)
         .border_style(border_style(focused))
         .style(Style::default().bg(PANEL_BG).fg(TEXT));
-    frame.render_widget(Paragraph::new(input.value()).block(block), area);
+    let mut widget = input.widget(block, Style::default().bg(PANEL_BG).fg(TEXT));
+    widget.set_cursor_line_style(if focused {
+        Style::default().bg(SUBTLE_BG)
+    } else {
+        Style::default()
+    });
+    widget.set_cursor_style(if focused {
+        Style::default().fg(Color::Black).bg(ACCENT)
+    } else {
+        Style::default().fg(TEXT).bg(PANEL_BG)
+    });
+    frame.render_widget(&widget, area);
 }
 
 fn render_text_area(
     frame: &mut Frame,
     area: Rect,
-    label: &str,
+    label: &'static str,
     input: &crate::tui::input::TextInput,
     focused: bool,
 ) {
-    let block = Block::bordered()
+    let block = rounded_block()
         .title(label)
         .border_style(border_style(focused))
         .style(Style::default().bg(PANEL_BG).fg(TEXT));
-    let text = if input.value().is_empty() {
-        Text::from(vec![Line::from("")])
+    let mut widget = input.widget(block, Style::default().bg(PANEL_BG).fg(TEXT));
+    widget.set_cursor_line_style(if focused {
+        Style::default().bg(SUBTLE_BG)
     } else {
-        Text::from(
-            input
-                .lines()
-                .iter()
-                .cloned()
-                .map(Line::from)
-                .collect::<Vec<_>>(),
-        )
-    };
-    frame.render_widget(Paragraph::new(text).block(block), area);
-}
-
-fn set_input_cursor(frame: &mut Frame, area: Rect, input: &crate::tui::input::TextInput) {
-    let (_, col) = input.cursor();
-    frame.set_cursor_position(Position::new(area.x + 1 + col as u16, area.y + 1));
-}
-
-fn set_text_area_cursor(frame: &mut Frame, area: Rect, input: &crate::tui::input::TextInput) {
-    let (row, col) = input.cursor();
-    frame.set_cursor_position(Position::new(
-        area.x + 1 + col as u16,
-        area.y + 1 + row as u16,
-    ));
+        Style::default()
+    });
+    widget.set_cursor_style(if focused {
+        Style::default().fg(Color::Black).bg(ACCENT)
+    } else {
+        Style::default().fg(TEXT).bg(PANEL_BG)
+    });
+    frame.render_widget(&widget, area);
 }
 
 fn shell_block<'a>() -> Block<'a> {
-    Block::bordered()
+    rounded_block()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(BORDER))
         .style(Style::default().bg(PANEL_BG).fg(TEXT))
+}
+
+fn header_block<'a>() -> Block<'a> {
+    rounded_block()
+        .title(Span::styled(
+            " oh-my-todo ",
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ))
+        .title_alignment(Alignment::Center)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(BORDER))
+        .style(Style::default().bg(HEADER_BG).fg(TEXT))
 }
 
 fn detail_panel_height(total_height: u16) -> u16 {
@@ -1628,11 +1705,26 @@ fn truncate_text(value: &str, max_width: usize) -> String {
 }
 
 fn panel_block<'a>(title: &'a str, focused: bool) -> Block<'a> {
-    Block::bordered()
+    rounded_block()
         .title(title)
         .borders(Borders::ALL)
         .border_style(border_style(focused))
         .style(Style::default().bg(PANEL_BG).fg(TEXT))
+}
+
+fn rounded_block<'a>() -> Block<'a> {
+    Block::bordered().border_type(BorderType::Rounded)
+}
+
+fn inset_rect(area: Rect, horizontal: u16, vertical: u16) -> Rect {
+    let horizontal = horizontal.min(area.width / 2);
+    let vertical = vertical.min(area.height / 2);
+    Rect::new(
+        area.x.saturating_add(horizontal),
+        area.y.saturating_add(vertical),
+        area.width.saturating_sub(horizontal.saturating_mul(2)),
+        area.height.saturating_sub(vertical.saturating_mul(2)),
+    )
 }
 
 fn border_style(focused: bool) -> Style {

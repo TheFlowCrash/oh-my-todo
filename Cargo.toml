@@ -12,6 +12,7 @@ ron = "0.12.1"
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.18"
 time = { version = "0.3.47", features = ["serde", "formatting", "parsing"] }
+tui-textarea = { package = "tui-textarea-2", version = "0.10.2", default-features = false, features = ["crossterm"] }
 ulid = "1.2.1"
 
 [dev-dependencies]
