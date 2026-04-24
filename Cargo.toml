@@ -12,7 +12,6 @@ documentation = "https://docs.rs/oh-my-todo"
 keywords = ["todo", "tui", "cli", "tasks", "productivity"]
 categories = ["command-line-utilities"]
 default-run = "todo"
-exclude = ["target2/**"]
 
 [[bin]]
 name = "todo"
