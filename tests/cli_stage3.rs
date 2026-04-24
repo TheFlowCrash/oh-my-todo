@@ -32,7 +32,7 @@ fn cli_stage3_task_archive_restore_and_purge_flow() {
 
     run(&data_dir, ["task", "archive", parent_id.as_str()]);
 
-    Command::cargo_bin("oh-my-todo")
+    Command::cargo_bin("todo")
         .unwrap()
         .env("OH_MY_TODO_DATA_DIR", &data_dir)
         .args(["task", "purge", parent_id.as_str(), "--force"])
@@ -86,7 +86,7 @@ fn cli_stage3_space_lifecycle_and_doctor_flow() {
 }
 
 fn run<const N: usize>(data_dir: &std::path::Path, args: [&str; N]) -> String {
-    let output = Command::cargo_bin("oh-my-todo")
+    let output = Command::cargo_bin("todo")
         .unwrap()
         .env("OH_MY_TODO_DATA_DIR", data_dir)
         .args(args)

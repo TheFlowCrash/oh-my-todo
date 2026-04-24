@@ -56,7 +56,7 @@ fn cli_requires_current_space_for_task_add_without_space_flag() {
     let temp_dir = tempdir().unwrap();
     let data_dir = temp_dir.path().join("app_data");
 
-    Command::cargo_bin("oh-my-todo")
+    Command::cargo_bin("todo")
         .unwrap()
         .env("OH_MY_TODO_DATA_DIR", &data_dir)
         .args(["task", "add", "Run 5km"])
@@ -68,7 +68,7 @@ fn cli_requires_current_space_for_task_add_without_space_flag() {
 }
 
 fn run<const N: usize>(data_dir: &std::path::Path, args: [&str; N]) -> String {
-    let output = Command::cargo_bin("oh-my-todo")
+    let output = Command::cargo_bin("todo")
         .unwrap()
         .env("OH_MY_TODO_DATA_DIR", data_dir)
         .args(args)

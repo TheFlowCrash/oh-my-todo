@@ -2,6 +2,21 @@
 name = "oh-my-todo"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+description = "Local-first terminal task manager with a mouse-first TUI and CLI."
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/TheFlowCrash/oh-my-todo"
+homepage = "https://github.com/TheFlowCrash/oh-my-todo"
+documentation = "https://docs.rs/oh-my-todo"
+keywords = ["todo", "tui", "cli", "tasks", "productivity"]
+categories = ["command-line-utilities"]
+default-run = "todo"
+exclude = ["target2/**"]
+
+[[bin]]
+name = "todo"
+path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4.6.1", features = ["derive"] }
